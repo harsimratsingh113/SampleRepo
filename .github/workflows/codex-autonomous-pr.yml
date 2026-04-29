@@ -38,6 +38,7 @@ jobs:
 
       - name: Run Codex workflow
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.CODEX_API_KEY }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
@@ -46,6 +47,19 @@ jobs:
           GITHUB_DEFAULT_REPO: ${{ inputs.repo }}
         run: |
           set -euo pipefail
+          codex --version
+
+          missing=0
+          for name in OPENAI_API_KEY JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=Missing secret::$name is not configured for this repository's GitHub Actions secrets"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
           MODE="${{ inputs.mode }}"
           codex exec \
             --skip-git-repo-check \
