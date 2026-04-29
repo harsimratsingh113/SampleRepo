@@ -13,6 +13,18 @@ on:
       repo:
         description: "GitHub repo as owner/repo"
         required: true
+      depth:
+        description: "RCA depth: concise, standard, or deep"
+        required: false
+        default: "standard"
+      module_focus:
+        description: "Optional repo area to focus, for example src/api"
+        required: false
+        default: "entire repository"
+      base_branch:
+        description: "Optional PR base branch. Empty means detect default branch."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -61,21 +73,128 @@ jobs:
             exit 1
           fi
 
+          ISSUE_KEY="${{ inputs.issue_key }}"
           MODE="${{ inputs.mode }}"
-          model_args=()
-          if [ -n "${CODEX_MODEL:-}" ]; then
-            model_args=(--model "$CODEX_MODEL")
+          REPO="${{ inputs.repo }}"
+          RCA_DEPTH="${{ inputs.depth }}"
+          MODULE_FOCUS="${{ inputs.module_focus }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          ISSUE_SLUG="$(printf '%s' "$ISSUE_KEY" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//')"
+          BRANCH_NAME="codex/${ISSUE_SLUG}-rca-fix"
+          if [ -n "$BASE_BRANCH" ]; then
+            BASE_BRANCH_TEXT="$BASE_BRANCH"
+            BRANCH_SOURCE="$BASE_BRANCH"
+          else
+            BASE_BRANCH_TEXT="detect the repository default branch"
+            BRANCH_SOURCE="the detected repository default branch"
           fi
 
-          codex exec \
-            --skip-git-repo-check \
-            --full-auto \
-            --sandbox workspace-write \
-            "${model_args[@]}" \
-            "Run an autonomous Jira-to-GitHub workflow for issue ${{ inputs.issue_key }} in mode $MODE.
+          if [ "$MODE" = "push-pr" ]; then
+            POST_RCA="yes, if Jira tools and permissions allow it"
+            POST_PR_LINK="yes, if Jira tools and permissions allow it"
+            MODE_RULES="After implementing and validating the fix, prepare a clean branch named '$BRANCH_NAME' from $BRANCH_SOURCE, push the branch to GitHub, and open or update a pull request. Include RCA, similar Jira tickets, related historical PRs, changed files, tests, risks, and rollback notes in the PR body. If GitHub tooling supports PR comments, add a short PR comment with the similar-ticket/past-PR evidence; otherwise keep that evidence in the PR body."
+          else
+            POST_RCA="no (dry-run disables Jira writes)"
+            POST_PR_LINK="no (dry-run disables Jira writes)"
+            MODE_RULES="Do not push branches, open pull requests, or post Jira comments. You may make local edits and a local commit only if that helps produce a reviewable dry run. Report the RCA, proposed implementation, changed files, and validation results in the final response."
+          fi
+          export ISSUE_KEY MODE REPO RCA_DEPTH MODULE_FOCUS BRANCH_NAME BASE_BRANCH_TEXT BRANCH_SOURCE POST_RCA POST_PR_LINK MODE_RULES
 
-            Use Jira and GitHub context from available tools and inspect the checked-out target repository on this GitHub Actions runner.
-            If mode is dry-run, do not push branches, open PRs, or post Jira comments.
-            If mode is push-pr, implement the smallest safe change, validate it, create branch codex/${{ inputs.issue_key }}-rca-fix, push it, open or update a PR, and post the PR link back to Jira when possible.
-            Include RCA, historical PR evidence, changed files, validation results, risks, and rollback notes.
-            Preserve unrelated changes and keep secrets out of commits, PR bodies, comments, and logs."
+          PROMPT_FILE="$RUNNER_TEMP/codex-rca-pr-prompt.md"
+          cat > "$PROMPT_FILE" <<'PROMPT'
+          Run a Codex CLI RCA-to-PR workflow for Jira issue __ISSUE_KEY__.
+          
+          Target:
+          - Jira issue: __ISSUE_KEY__
+          - GitHub repo: __REPO__
+          - Local repo path: __GITHUB_WORKSPACE__
+          - Module focus: __MODULE_FOCUS__
+          - Initial code paths:
+            - No explicit code paths were provided; discover relevant files from the ticket and repo.
+          - Historical PR search qualifier: no additional org qualifier
+          - RCA depth: __RCA_DEPTH__
+          - Branch name: __BRANCH_NAME__
+          - Base branch: __BASE_BRANCH_TEXT__
+          - Mode: __MODE__
+          - Post RCA back to Jira: __POST_RCA__
+          - Post PR link back to Jira: __POST_PR_LINK__
+          
+          RCA template:
+          Use this structure exactly:
+          1. Problem
+          2. Context
+          3. Assumptions
+          4. Proposed approach
+          5. Edge cases
+          6. Dependencies
+          7. Risks
+          8. Test strategy
+          9. Open questions
+          
+          Hard constraints:
+          - This must be a Codex CLI-driven workflow.
+          - Preserve unrelated local changes. Do not revert or overwrite changes that are not required for this ticket.
+          - If you cannot gather enough evidence or tests fail in a risky way, stop before push/PR and report the blocker.
+          - Keep secrets out of commits, PR bodies, Jira comments, and logs.
+          
+          Context gathering:
+          - Use Jira context for issue __ISSUE_KEY__, including summary, description, labels, comments, attachments/links when available, and related/similar tickets from the same project.
+          - Use GitHub context to search merged and open PRs that mention __ISSUE_KEY__ or similar Jira keys, then inspect relevant PR bodies, comments, changed files, and compact diffs.
+          - Inspect the local repository directly and prefer current source/test files over assumptions.
+          
+          Implementation workflow:
+          1. Summarize the confirmed problem, assumptions, related Jira/PR evidence, and likely files.
+          2. Make the smallest implementation-focused code change that addresses the RCA when enough evidence exists.
+          3. Add or update focused tests when the repository has a relevant test pattern.
+          4. Run appropriate validation commands and capture the exact results.
+          5. Prepare a clean branch named __BRANCH_NAME__ from __BRANCH_SOURCE__ if code changes are made.
+          6. Mode behavior: __MODE_RULES__
+          
+          PR template for push-pr mode:
+          - Title: [__ISSUE_KEY__] <short implementation summary>
+          - Body sections:
+            - Jira issue
+            - RCA summary
+            - Similar Jira tickets / historical PR evidence
+            - Implementation summary
+            - Changed files
+            - Validation
+            - Risks and rollback notes
+          
+          Final response:
+          - State whether this was dry-run or push-pr mode.
+          - List changed files.
+          - Summarize validation commands and outcomes.
+          - Include PR URL if one was opened or updated.
+          - Include any Jira comment/PR comment actions taken.
+          PROMPT
+
+          perl -0pi -e '
+            s/__ISSUE_KEY__/$ENV{ISSUE_KEY}/g;
+            s/__REPO__/$ENV{REPO}/g;
+            s/__GITHUB_WORKSPACE__/$ENV{GITHUB_WORKSPACE}/g;
+            s/__MODULE_FOCUS__/$ENV{MODULE_FOCUS}/g;
+            s/__RCA_DEPTH__/$ENV{RCA_DEPTH}/g;
+            s/__BRANCH_NAME__/$ENV{BRANCH_NAME}/g;
+            s/__BASE_BRANCH_TEXT__/$ENV{BASE_BRANCH_TEXT}/g;
+            s/__MODE__/$ENV{MODE}/g;
+            s/__POST_RCA__/$ENV{POST_RCA}/g;
+            s/__POST_PR_LINK__/$ENV{POST_PR_LINK}/g;
+            s/__BRANCH_SOURCE__/$ENV{BRANCH_SOURCE}/g;
+            s/__MODE_RULES__/$ENV{MODE_RULES}/g;
+          ' "$PROMPT_FILE"
+
+          echo "Rendered Codex RCA-to-PR prompt:"
+          sed 's/^/  /' "$PROMPT_FILE"
+
+          codex_cmd=(
+            codex exec
+            --skip-git-repo-check
+            --full-auto
+            --sandbox workspace-write
+          )
+          if [ -n "${CODEX_MODEL:-}" ]; then
+            codex_cmd+=(--model "$CODEX_MODEL")
+          fi
+          codex_cmd+=("$(cat "$PROMPT_FILE")")
+          "${codex_cmd[@]}"
