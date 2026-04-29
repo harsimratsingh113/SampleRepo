@@ -1,0 +1,60 @@
+name: Codex Autonomous Jira PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Jira issue key, for example KAN-5"
+        required: true
+      mode:
+        description: "dry-run or push-pr"
+        required: true
+        default: "dry-run"
+      repo:
+        description: "GitHub repo as owner/repo"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  codex:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codex-${{ inputs.repo }}-${{ inputs.issue_key }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node and Codex CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run Codex workflow
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_DEFAULT_REPO: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          MODE="${{ inputs.mode }}"
+          codex exec \
+            --skip-git-repo-check \
+            --full-auto \
+            --sandbox workspace-write \
+            "Run an autonomous Jira-to-GitHub workflow for issue ${{ inputs.issue_key }} in mode $MODE.
+
+            Use Jira and GitHub context from available tools and inspect the checked-out target repository on this GitHub Actions runner.
+            If mode is dry-run, do not push branches, open PRs, or post Jira comments.
+            If mode is push-pr, implement the smallest safe change, validate it, create branch codex/${{ inputs.issue_key }}-rca-fix, push it, open or update a PR, and post the PR link back to Jira when possible.
+            Include RCA, historical PR evidence, changed files, validation results, risks, and rollback notes.
+            Preserve unrelated changes and keep secrets out of commits, PR bodies, comments, and logs."
