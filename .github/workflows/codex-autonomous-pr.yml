@@ -45,6 +45,7 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_DEFAULT_REPO: ${{ inputs.repo }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL || secrets.CODEX_MODEL || '' }}
         run: |
           set -euo pipefail
           codex --version
@@ -61,10 +62,16 @@ jobs:
           fi
 
           MODE="${{ inputs.mode }}"
+          model_args=()
+          if [ -n "${CODEX_MODEL:-}" ]; then
+            model_args=(--model "$CODEX_MODEL")
+          fi
+
           codex exec \
             --skip-git-repo-check \
             --full-auto \
             --sandbox workspace-write \
+            "${model_args[@]}" \
             "Run an autonomous Jira-to-GitHub workflow for issue ${{ inputs.issue_key }} in mode $MODE.
 
             Use Jira and GitHub context from available tools and inspect the checked-out target repository on this GitHub Actions runner.
