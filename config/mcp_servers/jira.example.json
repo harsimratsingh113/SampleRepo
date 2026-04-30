@@ -1,0 +1,13 @@
+{
+  "name": "jira",
+  "env": {
+    "JIRA_BASE_URL": "${JIRA_BASE_URL}",
+    "JIRA_EMAIL": "${JIRA_EMAIL}",
+    "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
+  },
+  "command": [
+    "npx",
+    "-y",
+    "@aashari/mcp-server-atlassian-jira"
+  ]
+}

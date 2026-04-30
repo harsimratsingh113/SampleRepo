@@ -1,0 +1,140 @@
+name: Jira Codex Automation
+
+on:
+  # Best for Jira Automation: Jira sends a normal JSON client_payload.
+  repository_dispatch:
+    types: [jira-codex]
+
+  # Useful for manual tests or for callers that prefer workflow_dispatch.
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Optional Jira issue key, for example KAN-5"
+        required: false
+        type: string
+      jira_payload:
+        description: "Optional JSON string containing Jira payload with issue.key"
+        required: false
+        type: string
+      repo:
+        description: "Target GitHub repo as owner/repo. Defaults to this repository."
+        required: false
+        type: string
+      mode:
+        description: "dry-run or push-pr. Empty lets payload labels decide."
+        required: false
+        type: string
+      depth:
+        description: "RCA depth: concise, standard, or deep"
+        required: false
+        default: "standard"
+        type: string
+      module_prefix:
+        description: "Optional repo area to focus, for example src/api"
+        required: false
+        type: string
+      base_branch:
+        description: "Optional PR base branch"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: jira-codex-${{ github.event.client_payload.issue.key || inputs.issue_key || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  codex:
+    # Use your self-hosted runner for on-prem/VPN Jira access.
+    # For a GitHub-hosted trial only, change this to ubuntu-latest.
+    runs-on: [self-hosted, macOS, X64, codex-jira-runner]
+
+    env:
+      # Default for testing: reuse the self-hosted runner user's saved Codex login.
+      # Set repository variable CODEX_AUTH_MODE=api-key to require CODEX_API_KEY/OPENAI_API_KEY instead.
+      CODEX_AUTH_MODE: ${{ vars.CODEX_AUTH_MODE || 'chatgpt' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.CODEX_API_KEY }}
+      CODEX_API_KEY: ${{ secrets.CODEX_API_KEY || secrets.OPENAI_API_KEY }}
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_DEFAULT_REPO: ${{ github.repository }}
+      CODEX_MODE: dry-run
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Codex CLI if needed
+        run: |
+          set -euo pipefail
+          if ! command -v codex >/dev/null 2>&1; then
+            npm install -g @openai/codex
+          fi
+          codex --version
+
+      - name: Preflight secrets and files
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=Missing secret::$name is not configured"
+              missing=1
+            fi
+          done
+          case "${CODEX_AUTH_MODE:-chatgpt}" in
+            chatgpt)
+              unset OPENAI_API_KEY CODEX_API_KEY
+              if ! codex login status; then
+                echo "::error title=Codex login required::Run codex login on the self-hosted runner as the same OS user that runs the GitHub Actions runner service."
+                missing=1
+              fi
+              ;;
+            api-key)
+              if [ -z "${CODEX_API_KEY:-}" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+                echo "::error title=Missing Codex API key::Set CODEX_API_KEY or OPENAI_API_KEY, or use CODEX_AUTH_MODE=chatgpt with saved runner login."
+                missing=1
+              fi
+              if [ -z "${CODEX_API_KEY:-}" ] && [ -n "${OPENAI_API_KEY:-}" ]; then
+                echo "CODEX_API_KEY=${OPENAI_API_KEY}" >> "$GITHUB_ENV"
+              fi
+              ;;
+            *)
+              echo "::error title=Invalid CODEX_AUTH_MODE::Use chatgpt or api-key."
+              missing=1
+              ;;
+          esac
+          for file in scripts/jira_automation_codex_runner.py scripts/codex_rca_pr_runner.py scripts/codex_template_runner.py config/mcp_servers/jira.example.json config/mcp_servers/github.example.json; do
+            if [ ! -f "$file" ]; then
+              echo "::error title=Missing file::$file is required in this repository"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Run Jira-triggered Codex automation
+        run: |
+          set -euo pipefail
+          if [ "${CODEX_AUTH_MODE:-chatgpt}" = "chatgpt" ]; then
+            unset OPENAI_API_KEY CODEX_API_KEY
+          fi
+          python3 scripts/jira_automation_codex_runner.py --payload-file "$GITHUB_EVENT_PATH"
