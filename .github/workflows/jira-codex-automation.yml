@@ -73,15 +73,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Prepare self-hosted macOS environment
+        run: |
+          set -euo pipefail
+          actual_home="$(dscl . -read "/Users/$(whoami)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+          if [ -z "$actual_home" ] || [ ! -d "$actual_home" ]; then
+            actual_home="$(eval echo "~$(whoami)")"
+          fi
+          echo "Using runner user: $(whoami)"
+          echo "Using runner home: $actual_home"
+          echo "HOME=$actual_home" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_PREFIX=$actual_home/.npm-global" >> "$GITHUB_ENV"
+          echo "$actual_home/.npm-global/bin" >> "$GITHUB_PATH"
+          mkdir -p "$actual_home/.npm-global/bin" "$actual_home/.codex"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+      - name: Verify local toolchain
+        run: |
+          set -euo pipefail
+          python3 --version
+          if command -v codex >/dev/null 2>&1; then
+            codex --version
+          else
+            node --version
+            npm --version
+          fi
 
       - name: Install Codex CLI if needed
         run: |
