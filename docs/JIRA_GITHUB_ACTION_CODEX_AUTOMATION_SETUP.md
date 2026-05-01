@@ -147,9 +147,10 @@ Second value: .*codex-(rca|rca-only|dry-run|open-pr|push-pr|pr).*
 Mode labels:
 
 ```text
-codex-rca or codex-rca-only -> RCA report only, plus Jira RCA comment; no edits, no branch, no PR
-codex-dry-run               -> RCA plus implementation dry-run; no push/PR
-codex-open-pr               -> RCA plus implementation and PR
+codex-rca       -> RCA report artifact plus Jira RCA comment; no edits, no branch, no PR
+codex-rca-only  -> RCA report artifact only; no Jira comment, no edits, no branch, no PR
+codex-dry-run   -> RCA plus implementation dry-run; no push/PR
+codex-open-pr   -> RCA plus implementation and PR
 ```
 
 Action: Send web request
@@ -314,8 +315,10 @@ codex-output/codex-rca-report.md
 The workflow never attaches the markdown file to Jira. The report file is attached only to the
 GitHub Actions runner job as an artifact.
 
-For `rca-only` mode, the workflow also posts the RCA report text as a Jira comment. For Jira
-Cloud, keep:
+For the `codex-rca` label, the workflow also posts the RCA report text as a Jira comment. For
+the `codex-rca-only` label, it does not post a Jira comment and only uploads the runner artifact.
+
+For Jira Cloud, keep:
 
 ```text
 JIRA_COMMENT_API_VERSION=3

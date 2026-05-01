@@ -128,10 +128,11 @@ Example payload:
 }
 ```
 
-Mode defaults to `dry-run`. Labels such as `codex-rca`, `codex-rca-only`, or
-`codex-rca-report` switch the automation entrypoint to `rca-only`. Labels such as
-`codex-open-pr` or `codex-push-pr` switch it to `push-pr`. Explicit payload `mode` wins over
-labels, so omit `mode` from a label-driven Jira Automation body.
+Mode defaults to `dry-run`. `codex-rca` switches the automation entrypoint to `rca-only`
+and posts the generated RCA report as a Jira comment. `codex-rca-only` and
+`codex-rca-report` switch it to `rca-only` but keep the report as a GitHub Actions artifact
+only. Labels such as `codex-open-pr` or `codex-push-pr` switch it to `push-pr`. Explicit
+payload `mode` wins over labels, so omit `mode` from a label-driven Jira Automation body.
 
 High-level design diagram:
 

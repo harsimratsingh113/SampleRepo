@@ -33,6 +33,8 @@ MODE_BY_LABEL = {
     "codex-pr": "push-pr",
     "codex-dry-run": "dry-run",
 }
+RCA_COMMENT_LABELS = {"codex-rca"}
+RCA_ARTIFACT_ONLY_LABELS = {"codex-rca-only", "codex-rca-report"}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -95,7 +97,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--post-rca-comment-for-rca-only",
         action="store_true",
-        help="After a successful rca-only run, post the generated report file as a Jira comment.",
+        help="After a successful codex-rca run, post the generated report file as a Jira comment. codex-rca-only stays artifact-only.",
     )
     parser.add_argument(
         "--post-pr-link-comment",
@@ -247,6 +249,19 @@ def mode_from_payload(payload: dict[str, Any], explicit_mode: str | None) -> str
     return env_mode if env_mode in {"rca-only", "dry-run", "push-pr"} else "dry-run"
 
 
+def should_post_rca_comment(args: argparse.Namespace, payload: dict[str, Any], mode: str) -> bool:
+    labels = set(extract_labels(payload))
+    if labels & RCA_ARTIFACT_ONLY_LABELS:
+        return False
+    if args.post_rca_comment or as_bool(
+        first_value(payload, (("post_rca_comment",), ("inputs", "post_rca_comment")))
+    ):
+        return True
+    if mode == "rca-only" and args.post_rca_comment_for_rca_only:
+        return bool(labels & RCA_COMMENT_LABELS)
+    return False
+
+
 def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list[str]:
     issue_key = (
         args.issue_key
@@ -344,11 +359,7 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     for code_path in code_paths:
         runner_args.extend(["--code-path", code_path])
 
-    if (
-        args.post_rca_comment
-        or (mode == "rca-only" and args.post_rca_comment_for_rca_only)
-        or as_bool(first_value(payload, (("post_rca_comment",), ("inputs", "post_rca_comment"))))
-    ):
+    if should_post_rca_comment(args, payload, mode):
         runner_args.append("--post-rca-comment")
     if args.post_pr_link_comment or as_bool(
         first_value(payload, (("post_pr_link_comment",), ("inputs", "post_pr_link_comment")))
@@ -488,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     if (
         rc == 0
         and mode == "rca-only"
-        and args.post_rca_comment_for_rca_only
+        and should_post_rca_comment(args, payload, mode)
         and not args.print_only
     ):
         report_file = runner_arg_value(runner_args, "--report-file")
