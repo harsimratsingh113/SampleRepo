@@ -21,6 +21,9 @@ from codex_rca_pr_runner import main as run_codex_rca_pr
 
 
 MODE_BY_LABEL = {
+    "codex-rca": "rca-only",
+    "codex-rca-only": "rca-only",
+    "codex-rca-report": "rca-only",
     "codex-open-pr": "push-pr",
     "codex-push-pr": "push-pr",
     "codex-pr": "push-pr",
@@ -59,7 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("dry-run", "push-pr"),
+        choices=("rca-only", "dry-run", "push-pr"),
         default=None,
         help="Override mode. Defaults to payload mode, labels, or dry-run.",
     )
@@ -95,6 +98,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-github-mcp", action="store_true")
     parser.add_argument("--skip-github-auth-check", action="store_true")
     parser.add_argument("--add-jira-mcp", action="store_true")
+    parser.add_argument(
+        "--report-file",
+        default=None,
+        help="Optional path where Codex should write the final markdown report.",
+    )
     parser.add_argument(
         "--print",
         action="store_true",
@@ -213,13 +221,13 @@ def mode_from_payload(payload: dict[str, Any], explicit_mode: str | None) -> str
             ("inputs", "codex_mode"),
         ),
     )
-    if isinstance(value, str) and value.strip() in {"dry-run", "push-pr"}:
+    if isinstance(value, str) and value.strip() in {"rca-only", "dry-run", "push-pr"}:
         return value.strip()
     for label in extract_labels(payload):
         if label in MODE_BY_LABEL:
             return MODE_BY_LABEL[label]
     env_mode = os.getenv("CODEX_MODE", "dry-run").strip()
-    return env_mode if env_mode in {"dry-run", "push-pr"} else "dry-run"
+    return env_mode if env_mode in {"rca-only", "dry-run", "push-pr"} else "dry-run"
 
 
 def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list[str]:
@@ -290,6 +298,11 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     branch_name = args.branch_name or first_value(
         payload, (("branch_name",), ("inputs", "branch_name"))
     )
+    report_file = (
+        args.report_file
+        or first_value(payload, (("report_file",), ("inputs", "report_file")))
+        or os.getenv("CODEX_REPORT_FILE")
+    )
     code_paths = args.code_path or as_list(
         first_value(payload, (("code_paths",), ("code_path",), ("inputs", "code_paths")))
     )
@@ -297,7 +310,12 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     runner_args = [str(issue_key), "--repo-path", str(repo_path), "--depth", str(depth)]
     if repo:
         runner_args.extend(["--repo", str(repo)])
-    runner_args.append("--push-pr" if mode == "push-pr" else "--dry-run")
+    if mode == "push-pr":
+        runner_args.append("--push-pr")
+    elif mode == "rca-only":
+        runner_args.append("--rca-only")
+    else:
+        runner_args.append("--dry-run")
     for value, flag in (
         (module_prefix, "--module-prefix"),
         (github_org, "--github-org"),
@@ -325,6 +343,8 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
         runner_args.append("--skip-github-auth-check")
     if args.add_jira_mcp:
         runner_args.append("--add-jira-mcp")
+    if report_file:
+        runner_args.extend(["--report-file", str(report_file)])
     if args.print_only:
         runner_args.append("--print")
     return runner_args
@@ -335,7 +355,12 @@ def main(argv: list[str] | None = None) -> int:
     payload = load_payload(args)
     runner_args = build_runner_args(args, payload)
     issue_key = runner_args[0]
-    mode = "push-pr" if "--push-pr" in runner_args else "dry-run"
+    if "--push-pr" in runner_args:
+        mode = "push-pr"
+    elif "--rca-only" in runner_args:
+        mode = "rca-only"
+    else:
+        mode = "dry-run"
     print(f"Automation payload resolved Jira issue {issue_key} with mode {mode}.")
     return run_codex_rca_pr(runner_args)
 

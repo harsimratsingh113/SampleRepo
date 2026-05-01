@@ -90,6 +90,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Allow Codex to push the branch and open/update a GitHub PR.",
     )
     parser.add_argument(
+        "--rca-only",
+        action="store_true",
+        help="Generate an RCA report only. Do not edit files, prepare a branch, push, or open a PR.",
+    )
+    parser.add_argument(
+        "--report-file",
+        default=os.getenv("CODEX_REPORT_FILE"),
+        help="Optional path where Codex should write its final markdown report.",
+    )
+    parser.add_argument(
         "--post-rca-comment",
         action="store_true",
         help="Ask Codex to post the RCA summary back to Jira after analysis.",
@@ -172,12 +182,33 @@ def render_prompt(
     branch_source = args.base_branch or "the detected repository default branch"
     module_focus = args.module_prefix or "entire repository"
     github_org = args.github_org or "no additional org qualifier"
-    if mode == "dry-run":
+    rca_template = """RCA report template:
+Use this structure exactly:
+1. Problem
+2. Context
+3. Assumptions
+4. Proposed approach
+5. Edge cases
+6. Dependencies
+7. Risks
+8. Test strategy
+9. Open questions"""
+
+    if mode == "rca-only":
+        post_rca = "no (rca-only disables Jira writes)"
+        post_pr_link = "no (rca-only disables Jira writes)"
+    elif mode == "dry-run":
         post_rca = "no (dry-run disables Jira writes)"
         post_pr_link = "no (dry-run disables Jira writes)"
     else:
         post_rca = "yes" if args.post_rca_comment else "no"
         post_pr_link = "yes" if args.post_pr_link_comment else "no"
+    rca_only_rules = (
+        "Generate an RCA report only. Do not edit files, create branches, commit, run formatters, "
+        "push branches, open PRs, or post Jira comments. Inspect Jira context, local source, tests, "
+        "and GitHub PR evidence in a read-only manner. Final response must be a markdown RCA report "
+        "using the RCA template exactly."
+    )
     dry_run_rules = (
         "Do not push branches, open PRs, or post Jira comments. You may make local edits and "
         "a local commit only if that helps produce a reviewable dry run."
@@ -188,7 +219,21 @@ def render_prompt(
         "risks, and rollback notes in the PR body. If GitHub MCP supports PR comments, add a short "
         "PR comment with the similar-ticket/past-PR evidence; otherwise keep that evidence in the PR body."
     )
-    mode_rules = dry_run_rules if mode == "dry-run" else push_rules
+    if mode == "rca-only":
+        mode_rules = rca_only_rules
+        workflow_steps = """1. Summarize the confirmed problem, assumptions, related Jira/PR evidence, and likely files.
+2. Inspect the local repository and GitHub PR evidence only as needed to support the RCA.
+3. Do not make code changes, commits, branches, pushes, PRs, Jira comments, or other write actions.
+4. Capture validation as a recommended test strategy unless a safe read-only command is clearly useful.
+5. Produce the final markdown RCA report using the template exactly."""
+    else:
+        mode_rules = dry_run_rules if mode == "dry-run" else push_rules
+        workflow_steps = f"""1. Summarize the confirmed problem, assumptions, related Jira/PR evidence, and likely files.
+2. Make the smallest implementation-focused code change that addresses the RCA.
+3. Add or update focused tests when the repository has a relevant test pattern.
+4. Run appropriate validation commands and capture the exact results.
+5. Prepare a clean branch named `{branch_name}` from {branch_source} if code changes are made.
+6. Mode behavior: {mode_rules}"""
 
     return f"""Run a Codex CLI RCA-to-PR workflow for Jira issue {jira_key}.
 
@@ -210,6 +255,8 @@ Target:
 Jira context:
 {jira_context}
 
+{rca_template}
+
 Hard constraints:
 - This must be a Codex CLI-driven workflow. Do not run `jira-rca-assistant`, `./jira-rca-assistant`, or `python -m jira_rca_assistant`.
 - You may inspect files under `jira_rca_assistant/` and docs such as `docs/CLI_ORCHESTRATOR_FRAMEWORK.md` only as reference for useful guardrails.
@@ -225,17 +272,14 @@ Context gathering:
 - Inspect the local repository directly and prefer current source/test files over assumptions.
 
 Implementation workflow:
-1. Summarize the confirmed problem, assumptions, related Jira/PR evidence, and likely files.
-2. Make the smallest implementation-focused code change that addresses the RCA.
-3. Add or update focused tests when the repository has a relevant test pattern.
-4. Run appropriate validation commands and capture the exact results.
-5. Prepare a clean branch named `{branch_name}` from {branch_source} if code changes are made.
-6. Mode behavior: {mode_rules}
+{workflow_steps}
 
 Final response:
-- State whether this was dry-run or push-pr mode.
-- List changed files.
-- Summarize validation commands and outcomes.
+- Start with `# RCA Report: {jira_key}`.
+- Include the nine RCA template sections exactly.
+- State whether this was rca-only, dry-run, or push-pr mode.
+- List changed files, or state `None` when no files were changed.
+- Summarize validation commands and outcomes, or recommended validation if no commands were run.
 - Include PR URL if one was opened or updated.
 - Include any Jira comment/PR comment actions taken.
 """
@@ -245,8 +289,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     load_env_file()
 
-    if args.dry_run and args.push_pr:
-        print("Choose either --dry-run or --push-pr, not both.", file=sys.stderr)
+    selected_modes = [args.dry_run, args.push_pr, args.rca_only]
+    if sum(1 for selected in selected_modes if selected) > 1:
+        print("Choose only one of --rca-only, --dry-run, or --push-pr.", file=sys.stderr)
         return 2
 
     repo = (
@@ -266,7 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    mode = "push-pr" if args.push_pr else "dry-run"
+    if args.push_pr:
+        mode = "push-pr"
+    elif args.rca_only:
+        mode = "rca-only"
+    else:
+        mode = "dry-run"
     repo_path = Path(args.repo_path).expanduser().resolve()
     jira_context = (
         "Jira context was not pre-fetched because --skip-jira-fetch was used. "
@@ -313,24 +363,32 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             return rc
 
+    codex_command = [
+        "codex",
+        "exec",
+        "--cd",
+        str(repo_path),
+        "--skip-git-repo-check",
+        "--full-auto",
+        "--sandbox",
+        "workspace-write",
+    ]
+    if args.report_file:
+        report_file = Path(args.report_file).expanduser().resolve()
+        report_file.parent.mkdir(parents=True, exist_ok=True)
+        codex_command.extend(["--output-last-message", str(report_file)])
+    codex_command.append(prompt)
+
     try:
         completed = subprocess.run(
-            [
-                "codex",
-                "exec",
-                "--cd",
-                str(repo_path),
-                "--skip-git-repo-check",
-                "--full-auto",
-                "--sandbox",
-                "workspace-write",
-                prompt,
-            ],
+            codex_command,
             check=False,
         )
     except FileNotFoundError:
         print("Could not find `codex` on PATH.", file=sys.stderr)
         return 4
+    if args.report_file:
+        print(f"Codex final report file: {Path(args.report_file).expanduser().resolve()}")
     return int(completed.returncode)
 
 

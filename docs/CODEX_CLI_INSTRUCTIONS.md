@@ -12,6 +12,12 @@ Use the helper runner when you want to specify only a template name and Jira key
 python3 scripts/codex_template_runner.py RCA_AND_COMMENT KAN-5
 ```
 
+If you also want the runner to register the Jira MCP server first from a dedicated config file:
+
+```bash
+python3 scripts/codex_template_runner.py RCA_AND_COMMENT KAN-5 --add-jira-mcp
+```
+
 Register Jira and GitHub MCP before launching Codex:
 
 ```bash
@@ -51,21 +57,31 @@ python3 scripts/codex_template_runner.py RCA_AND_COMMENT KAN-5 \
   --comment-policy "structured markdown with short sections and explicit risks"
 ```
 
-MCP config files:
+The Jira MCP config file lives at:
 
 ```text
 config/mcp_servers/jira.local.json
-config/mcp_servers/github.local.json
 ```
 
 The runner accepts `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`, then adds
 the `ATLASSIAN_SITE_NAME`, `ATLASSIAN_USER_EMAIL`, and `ATLASSIAN_API_TOKEN` aliases
 required by `@aashari/mcp-server-atlassian-jira` when it registers the MCP server.
 
-Example configs:
+An example file is also provided at:
 
 ```text
 config/mcp_servers/jira.example.json
+```
+
+The GitHub MCP config file should live at:
+
+```text
+config/mcp_servers/github.local.json
+```
+
+An example remote MCP config is provided at:
+
+```text
 config/mcp_servers/github.example.json
 ```
 

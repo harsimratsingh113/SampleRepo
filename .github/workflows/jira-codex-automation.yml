@@ -21,7 +21,7 @@ on:
         required: false
         type: string
       mode:
-        description: "dry-run or push-pr. Empty lets payload labels decide."
+        description: "rca-only, dry-run, or push-pr. Empty lets payload labels decide."
         required: false
         type: string
       depth:
@@ -66,6 +66,9 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
       GITHUB_DEFAULT_REPO: ${{ github.repository }}
       CODEX_MODE: dry-run
+      CODEX_REPORT_FILE: codex-output/codex-rca-report.md
+      JIRA_ATTACH_CODEX_REPORT: ${{ vars.JIRA_ATTACH_CODEX_REPORT || 'false' }}
+      JIRA_ATTACH_API_VERSION: ${{ vars.JIRA_ATTACH_API_VERSION || '3' }}
 
     steps:
       - name: Checkout repository
@@ -152,4 +155,66 @@ jobs:
           if [ "${CODEX_AUTH_MODE:-chatgpt}" = "chatgpt" ]; then
             unset OPENAI_API_KEY CODEX_API_KEY
           fi
-          python3 scripts/jira_automation_codex_runner.py --payload-file "$GITHUB_EVENT_PATH"
+          mkdir -p "$(dirname "$CODEX_REPORT_FILE")"
+          python3 scripts/jira_automation_codex_runner.py \
+            --payload-file "$GITHUB_EVENT_PATH" \
+            --report-file "$CODEX_REPORT_FILE"
+
+      - name: Upload Codex RCA report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-rca-report-${{ github.run_id }}
+          path: ${{ env.CODEX_REPORT_FILE }}
+          if-no-files-found: warn
+
+      - name: Attach Codex RCA report to Jira
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${JIRA_ATTACH_CODEX_REPORT:-false}" != "true" ]; then
+            echo "Skipping Jira attachment because JIRA_ATTACH_CODEX_REPORT is not true."
+            exit 0
+          fi
+          if [ ! -s "$CODEX_REPORT_FILE" ]; then
+            echo "::warning title=Missing report::No Codex report file found at $CODEX_REPORT_FILE"
+            exit 0
+          fi
+          issue_key="$(
+            python3 - "$GITHUB_EVENT_PATH" <<'PY'
+          import json
+          import os
+          import sys
+
+          path = sys.argv[1]
+          with open(path, "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          client_payload = payload.get("client_payload")
+          if isinstance(client_payload, dict):
+              merged = dict(payload)
+              merged.update(client_payload)
+              payload = merged
+          value = (
+              payload.get("issue_key")
+              or payload.get("jira_key")
+              or payload.get("key")
+              or (payload.get("issue") or {}).get("key")
+              or (payload.get("jira") or {}).get("key")
+              or (payload.get("inputs") or {}).get("issue_key")
+              or os.getenv("JIRA_ISSUE_KEY")
+              or os.getenv("ISSUE_KEY")
+              or ""
+          )
+          print(str(value).strip())
+          PY
+          )"
+          if [ -z "$issue_key" ]; then
+            echo "::warning title=Missing Jira key::Cannot attach report because issue key was not found."
+            exit 0
+          fi
+          jira_base="${JIRA_BASE_URL%/}"
+          curl --fail --silent --show-error \
+            --user "$JIRA_EMAIL:$JIRA_API_TOKEN" \
+            --header "X-Atlassian-Token: no-check" \
+            --form "file=@${CODEX_REPORT_FILE};type=text/markdown" \
+            "$jira_base/rest/api/${JIRA_ATTACH_API_VERSION}/issue/${issue_key}/attachments"

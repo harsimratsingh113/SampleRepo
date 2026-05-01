@@ -1,0 +1,359 @@
+# Jira To GitHub Action Codex Automation Setup
+
+This flow lets Jira Automation trigger a GitHub Actions workflow. The workflow runs on a
+GitHub runner, calls `scripts/jira_automation_codex_runner.py`, and the wrapper fetches Jira
+context before launching `codex exec`.
+
+```text
+Jira label added
+  -> Jira Automation send web request
+  -> GitHub repository_dispatch or workflow_dispatch
+  -> GitHub Actions workflow
+  -> self-hosted runner
+  -> scripts/jira_automation_codex_runner.py
+  -> scripts/codex_rca_pr_runner.py
+  -> Jira REST fetch
+  -> codex exec
+  -> dry-run summary or PR
+```
+
+## GitHub Repository Setup
+
+Copy these files into the target repo that Codex should inspect and edit:
+
+```text
+scripts/jira_automation_codex_runner.py
+scripts/codex_rca_pr_runner.py
+scripts/codex_template_runner.py
+config/mcp_servers/jira.example.json
+config/mcp_servers/github.example.json
+```
+
+Copy the workflow template into the target repo:
+
+```bash
+mkdir -p .github/workflows
+cp templates/github-actions/jira-codex-automation.yml \
+  .github/workflows/jira-codex-automation.yml
+```
+
+Commit and push the workflow file to the default branch. GitHub will not trigger a
+`workflow_dispatch` or `repository_dispatch` workflow unless the workflow file exists on the
+default branch.
+
+Create these GitHub repository secrets:
+
+```text
+JIRA_BASE_URL
+JIRA_EMAIL
+JIRA_API_TOKEN
+```
+
+For testing, the workflow defaults to ChatGPT-managed Codex CLI auth on the self-hosted
+runner. That means you do not need `OPENAI_API_KEY` or `CODEX_API_KEY` if the runner user is
+already logged in with Codex CLI.
+
+On the self-hosted runner machine, log in as the same OS user that runs the GitHub Actions
+runner service, then run:
+
+```bash
+codex login
+codex login status
+```
+
+Expected status:
+
+```text
+Logged in using ChatGPT
+```
+
+If your runner runs as a service user, do the login as that service user. A successful login
+under your personal shell user does not help if the GitHub Actions runner service runs as a
+different user with a different home directory.
+
+For production-style API key auth later, add one of these repository secrets:
+
+```text
+CODEX_API_KEY
+OPENAI_API_KEY
+```
+
+Then set this GitHub repository variable:
+
+```text
+CODEX_AUTH_MODE=api-key
+```
+
+The Jira-to-GitHub dispatch token is not a GitHub Actions secret. Store that token in Jira
+Automation or Jira's secret/connection mechanism.
+
+For self-hosted runner mode, register a runner with labels matching the workflow:
+
+```text
+self-hosted
+macOS
+X64
+codex-jira-runner
+```
+
+The runner must be able to reach:
+
+```text
+GitHub over HTTPS
+OpenAI/Codex service over HTTPS
+Jira over HTTPS or VPN/private network
+```
+
+## Recommended Jira Trigger: repository_dispatch
+
+Use this when Jira sends a normal JSON payload to GitHub.
+
+GitHub endpoint:
+
+```text
+POST https://api.github.com/repos/<owner>/<repo>/dispatches
+```
+
+GitHub token for Jira:
+
+```text
+Fine-grained PAT or GitHub App installation token
+Repository: selected target repo
+Permission: Contents write
+```
+
+Jira Automation rule from UI:
+
+```text
+Rule name: Codex: dispatch GitHub Action
+Trigger: Field value changed
+Field: Labels
+Change type: Value added
+For: Edit issue
+```
+
+Add conditions:
+
+```text
+JQL condition: project = KAN
+Issue fields condition: Labels does not contain codex-disabled
+Smart value condition: {{fieldChange.toString}} contains one of:
+- codex-rca
+- codex-rca-only
+- codex-dry-run
+- codex-open-pr
+```
+
+Mode labels:
+
+```text
+codex-rca or codex-rca-only -> RCA report only; no edits, no branch, no PR
+codex-dry-run               -> RCA plus implementation dry-run; no push/PR
+codex-open-pr               -> RCA plus implementation and PR
+```
+
+Action: Send web request
+
+```text
+Web request URL: https://api.github.com/repos/<owner>/<repo>/dispatches
+HTTP method: POST
+Web request body: Custom data
+Delay execution: unchecked
+Wait for response: checked
+```
+
+Headers:
+
+```text
+Authorization: Bearer <jira-stored-github-token>
+Accept: application/vnd.github+json
+Content-Type: application/json
+X-GitHub-Api-Version: 2022-11-28
+```
+
+Label-driven request body:
+
+Use this when one Jira rule should support `codex-rca`, `codex-dry-run`, and
+`codex-open-pr`. Notice that `mode` is omitted so the runner can infer the mode from labels.
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}",
+      "fields": {
+        "labels": {{issue.labels.asJsonStringArray}}
+      }
+    },
+    "repo": "<owner>/<repo>",
+    "repo_path": ".",
+    "depth": "standard"
+  }
+}
+```
+
+Explicit dry-run request body:
+
+Use this only when the rule should always run dry-run regardless of labels.
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}",
+      "fields": {
+        "labels": {{issue.labels.asJsonStringArray}}
+      }
+    },
+    "repo": "<owner>/<repo>",
+    "repo_path": ".",
+    "mode": "dry-run",
+    "depth": "standard"
+  }
+}
+```
+
+Explicit RCA-only request body:
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}",
+      "fields": {
+        "labels": {{issue.labels.asJsonStringArray}}
+      }
+    },
+    "repo": "<owner>/<repo>",
+    "repo_path": ".",
+    "mode": "rca-only",
+    "depth": "standard"
+  }
+}
+```
+
+The script extracts `client_payload.issue.key`, so no one manually passes the Jira key to the
+CLI. Jira injects the active issue key into the payload.
+
+## Alternative Trigger: workflow_dispatch
+
+Use this if you want to call a named workflow file directly.
+
+GitHub endpoint:
+
+```text
+POST https://api.github.com/repos/<owner>/<repo>/actions/workflows/jira-codex-automation.yml/dispatches
+```
+
+GitHub token for Jira:
+
+```text
+Fine-grained PAT or GitHub App installation token
+Repository: selected target repo
+Permission: Actions write
+```
+
+Request body:
+
+```json
+{
+  "ref": "main",
+  "inputs": {
+    "issue_key": "{{issue.key}}",
+    "repo": "<owner>/<repo>",
+    "mode": "dry-run",
+    "depth": "standard"
+  }
+}
+```
+
+For PR mode, set:
+
+```json
+"mode": "push-pr"
+```
+
+For RCA report only, set:
+
+```json
+"mode": "rca-only"
+```
+
+## GitHub Workflow Template
+
+The workflow template is available at:
+
+```text
+templates/github-actions/jira-codex-automation.yml
+```
+
+The important step is:
+
+```bash
+python3 scripts/jira_automation_codex_runner.py \
+  --payload-file "$GITHUB_EVENT_PATH" \
+  --report-file "$CODEX_REPORT_FILE"
+```
+
+`GITHUB_EVENT_PATH` contains either `client_payload` from `repository_dispatch` or `inputs`
+from `workflow_dispatch`. The automation runner reads that payload and delegates to the Codex
+RCA/PR runner.
+
+The workflow uploads the final Codex message as a GitHub Actions artifact:
+
+```text
+codex-rca-report-<run-id>
+```
+
+The report file is written to:
+
+```text
+codex-output/codex-rca-report.md
+```
+
+By default, the workflow does not attach the file to Jira. To attach the report directly to the
+Jira issue, set this GitHub repository variable:
+
+```text
+JIRA_ATTACH_CODEX_REPORT=true
+```
+
+For Jira Cloud, keep:
+
+```text
+JIRA_ATTACH_API_VERSION=3
+```
+
+For Jira Server/Data Center, set:
+
+```text
+JIRA_ATTACH_API_VERSION=2
+```
+
+## Validation
+
+From Jira Automation, click **Validate** on the web request action. Expected results:
+
+```text
+repository_dispatch: 204 No Content
+workflow_dispatch: 204 No Content, or 200 if the GitHub API returns run details
+```
+
+Then check GitHub:
+
+```text
+Repository -> Actions -> Jira Codex Automation
+```
+
+If the run starts but fails immediately, check:
+
+```text
+Missing GitHub secrets
+Workflow file not on default branch
+Self-hosted runner labels do not match
+Jira token lacks Contents write or Actions write
+Jira smart value JSON is invalid
+```
