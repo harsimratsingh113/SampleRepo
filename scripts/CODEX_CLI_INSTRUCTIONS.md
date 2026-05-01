@@ -148,8 +148,16 @@ The runner clones additional repos, passes them to the same `codex exec` run as 
 produces one report file for the Jira issue. Private additional repos require
 `MULTI_REPO_GITHUB_TOKEN` with read access.
 
-The standard GitHub Actions workflow always prepares and passes this RCA evidence bundle to
-Codex, so Jira does not need to send `context_files`:
+The GitHub Actions workflow can optionally enrich RCA with external evidence. Jira does not need
+to send `context_files`; GitHub repo variables decide whether the parallel collectors run:
+
+```text
+ENABLE_SNYK_CONTEXT=true
+ENABLE_NEW_RELIC_CONTEXT=true
+ENABLE_CONFLUENCE_CONTEXT=true
+```
+
+When enabled, the collector workflows upload markdown artifacts such as:
 
 ```text
 codex-context/snyk.md
@@ -157,11 +165,11 @@ codex-context/newrelic.md
 codex-context/confluence.md
 ```
 
-If no collection step populated a file, `scripts/prepare_external_context.py` creates a safe
-placeholder. Add workflow steps before the Codex run to overwrite those files with sanitized Snyk,
-New Relic, Confluence, incident, support, or log summaries.
+The Codex job downloads available artifacts and passes only existing non-empty files with
+`--context-file`. If the flags are missing or set to `false`, no external markdown is generated
+and Codex runs exactly as before.
 
-Minimal Jira payload with standard context:
+Minimal Jira payload remains unchanged:
 
 ```json
 {

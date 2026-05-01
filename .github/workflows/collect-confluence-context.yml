@@ -1,0 +1,83 @@
+name: Collect Confluence Context
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: 'JSON array of runner labels, for example ["ubuntu-latest"] or ["self-hosted","macOS","X64","codex-jira-runner"].'
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
+      context_dir:
+        description: "Directory where the markdown context file should be written."
+        required: false
+        default: codex-context
+        type: string
+      artifact_name:
+        description: "Artifact name used by the master Codex workflow."
+        required: false
+        default: codex-context-confluence
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Collect Confluence runbook context
+        env:
+          CONFLUENCE_BASE_URL: ${{ vars.CONFLUENCE_BASE_URL }}
+          CONFLUENCE_PAGE_ID: ${{ vars.CONFLUENCE_PAGE_ID }}
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          CONTEXT_DIR: ${{ inputs.context_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CONTEXT_DIR"
+
+          if [ -z "${CONFLUENCE_BASE_URL:-}" ] \
+            || [ -z "${CONFLUENCE_PAGE_ID:-}" ] \
+            || [ -z "${CONFLUENCE_EMAIL:-}" ] \
+            || [ -z "${CONFLUENCE_API_TOKEN:-}" ]; then
+            echo "Confluence URL, page id, email, or token is not configured; skipping Confluence context."
+            exit 0
+          fi
+
+          response_json="$RUNNER_TEMP/confluence-response.json"
+          base_url="${CONFLUENCE_BASE_URL%/}"
+          api_url="$base_url/wiki/rest/api/content/$CONFLUENCE_PAGE_ID?expand=body.storage,version,title"
+
+          set +e
+          curl -sS \
+            -u "$CONFLUENCE_EMAIL:$CONFLUENCE_API_TOKEN" \
+            "$api_url" > "$response_json"
+          curl_status=$?
+          set -e
+
+          if [ "$curl_status" -ne 0 ] || [ ! -s "$response_json" ]; then
+            echo "Confluence request did not return a response; skipping Confluence context."
+            exit 0
+          fi
+
+          {
+            echo "# Confluence runbook"
+            echo
+            echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "Page ID: $CONFLUENCE_PAGE_ID"
+            echo
+            echo "## REST response"
+            echo
+            echo '```json'
+            cat "$response_json"
+            echo
+            echo '```'
+          } > "$CONTEXT_DIR/confluence.md"
+
+      - name: Upload Confluence context
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.context_dir }}/confluence.md
+          if-no-files-found: ignore

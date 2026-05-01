@@ -1,0 +1,110 @@
+name: Collect New Relic Context
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: 'JSON array of runner labels, for example ["ubuntu-latest"] or ["self-hosted","macOS","X64","codex-jira-runner"].'
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
+      context_dir:
+        description: "Directory where the markdown context file should be written."
+        required: false
+        default: codex-context
+        type: string
+      artifact_name:
+        description: "Artifact name used by the master Codex workflow."
+        required: false
+        default: codex-context-newrelic
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Collect New Relic log context
+        env:
+          NEW_RELIC_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
+          NEW_RELIC_ACCOUNT_ID: ${{ vars.NEW_RELIC_ACCOUNT_ID }}
+          NEW_RELIC_SERVICE_NAME: ${{ vars.NEW_RELIC_SERVICE_NAME }}
+          CONTEXT_DIR: ${{ inputs.context_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CONTEXT_DIR"
+
+          if [ -z "${NEW_RELIC_API_KEY:-}" ] || [ -z "${NEW_RELIC_ACCOUNT_ID:-}" ]; then
+            echo "New Relic API key or account id is not configured; skipping New Relic context."
+            exit 0
+          fi
+
+          request_json="$RUNNER_TEMP/newrelic-request.json"
+          response_json="$RUNNER_TEMP/newrelic-response.json"
+
+          python3 - <<'PY' > "$request_json"
+          import json
+          import os
+
+          account_id = int(os.environ["NEW_RELIC_ACCOUNT_ID"])
+          service = os.environ.get("NEW_RELIC_SERVICE_NAME", "").strip()
+
+          if service:
+              where = f"entity.name = '{service.replace(chr(39), chr(39) + chr(39))}'"
+          else:
+              where = "timestamp IS NOT NULL"
+
+          nrql = (
+              "SELECT timestamp, level, message "
+              f"FROM Log WHERE {where} SINCE 2 hours ago LIMIT 50"
+          )
+          query = """
+          query($accountId: Int!, $nrql: Nrql!) {
+            actor {
+              account(id: $accountId) {
+                nrql(query: $nrql) {
+                  results
+                }
+              }
+            }
+          }
+          """
+          print(json.dumps({"query": query, "variables": {"accountId": account_id, "nrql": nrql}}))
+          PY
+
+          set +e
+          curl -sS https://api.newrelic.com/graphql \
+            -H "Content-Type: application/json" \
+            -H "API-Key: $NEW_RELIC_API_KEY" \
+            --data @"$request_json" > "$response_json"
+          curl_status=$?
+          set -e
+
+          if [ "$curl_status" -ne 0 ] || [ ! -s "$response_json" ]; then
+            echo "New Relic query did not return a response; skipping New Relic context."
+            exit 0
+          fi
+
+          {
+            echo "# New Relic logs"
+            echo
+            echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "Account ID: $NEW_RELIC_ACCOUNT_ID"
+            echo "Service: ${NEW_RELIC_SERVICE_NAME:-not specified}"
+            echo
+            echo "## GraphQL response"
+            echo
+            echo '```json'
+            cat "$response_json"
+            echo
+            echo '```'
+          } > "$CONTEXT_DIR/newrelic.md"
+
+      - name: Upload New Relic context
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.context_dir }}/newrelic.md
+          if-no-files-found: ignore

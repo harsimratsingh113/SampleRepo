@@ -234,18 +234,20 @@ Multi-repo scanning is intended for `codex-rca`, `codex-rca-only`, and `codex-dr
 `codex-open-pr`, use a single repo so the automation does not accidentally create or coordinate
 changes across multiple repositories.
 
-## Additional Data Source Context
+## Optional Additional Data Source Context
 
-The workflow owns the standard external evidence bundle. Jira does not need to decide whether
-Snyk, New Relic, or Confluence context should be included.
+External data source context is optional and controlled by GitHub repository variables, not Jira.
+Existing Jira Automation rules can keep sending only the issue key, label, repo, and depth.
 
 The recommended pattern is:
 
 ```text
-external tool API/CLI
-  -> workflow step writes sanitized markdown/json into codex-context/
-  -> workflow passes the standard files to Codex
-  -> Codex scans repos + standard external context in one run
+Jira label update
+  -> master workflow starts
+  -> optional collector jobs run in parallel when enabled
+  -> collectors upload markdown artifacts
+  -> Codex job downloads available artifacts
+  -> Codex receives only existing non-empty context files
   -> one consolidated RCA report for the Jira issue
 ```
 
@@ -269,66 +271,41 @@ The Jira Automation payload can stay minimal:
 }
 ```
 
-The workflow always prepares and passes these standard files:
+Enable collectors in GitHub:
 
 ```text
-codex-context/snyk.md
-codex-context/newrelic.md
-codex-context/confluence.md
+Settings
+  -> Secrets and variables
+  -> Actions
+  -> Variables
 ```
 
-`scripts/prepare_external_context.py --default-files` creates those files as safe placeholders
-when source-specific data has not been populated yet. If you want real Snyk/New Relic/Confluence
-evidence, add collection steps before the Codex step that overwrite the placeholders with
-sanitized content.
+Optional variables:
 
-Example source-specific collection placement:
+```text
+ENABLE_SNYK_CONTEXT=true
+ENABLE_NEW_RELIC_CONTEXT=true
+ENABLE_CONFLUENCE_CONTEXT=true
+```
 
-```yaml
-- name: Prepare external context files
-  run: |
-    mkdir -p "$CODEX_CONTEXT_DIR"
-    python3 scripts/prepare_external_context.py \
-      --payload-file "$GITHUB_EVENT_PATH" \
-      --context-dir "$CODEX_CONTEXT_DIR" \
-      --default-files
+Optional runner override for collectors:
 
-- name: Collect Snyk context
-  if: ${{ secrets.SNYK_TOKEN != '' }}
-  run: |
-    {
-      echo "# Snyk vulnerabilities"
-      echo
-      echo "Populate this step with your approved Snyk CLI/API query."
-    } > codex-context/snyk.md
+```text
+CONTEXT_COLLECTOR_RUNS_ON=["ubuntu-latest"]
+```
 
-- name: Collect New Relic context
-  if: ${{ secrets.NEW_RELIC_API_KEY != '' }}
-  run: |
-    {
-      echo "# New Relic logs"
-      echo
-      echo "Populate this step with your approved NRQL/log query."
-    } > codex-context/newrelic.md
+If the data source is only reachable from your VPN/self-hosted laptop runner, set:
 
-- name: Collect Confluence context
-  if: ${{ secrets.CONFLUENCE_API_TOKEN != '' }}
-  run: |
-    {
-      echo "# Confluence runbook"
-      echo
-      echo "Populate this step with your approved Confluence page export."
-    } > codex-context/confluence.md
+```text
+CONTEXT_COLLECTOR_RUNS_ON=["self-hosted","macOS","X64","codex-jira-runner"]
+```
 
-- name: Run Jira-triggered Codex automation
-  run: |
-    python3 scripts/jira_automation_codex_runner.py \
-      --payload-file "$GITHUB_EVENT_PATH" \
-      --report-file "$CODEX_REPORT_FILE" \
-      --context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md" \
-      --context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md" \
-      --context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md" \
-      --post-rca-comment-for-rca-only
+The master workflow calls these reusable workflows:
+
+```text
+.github/workflows/collect-snyk-context.yml
+.github/workflows/collect-newrelic-context.yml
+.github/workflows/collect-confluence-context.yml
 ```
 
 Recommended GitHub secrets/variables:
@@ -340,6 +317,25 @@ NEW_RELIC_ACCOUNT_ID
 CONFLUENCE_BASE_URL
 CONFLUENCE_EMAIL
 CONFLUENCE_API_TOKEN
+```
+
+Optional behavior:
+
+```text
+Flag missing or false:
+  collector job is skipped.
+
+Flag true but required secret/config missing:
+  collector exits successfully without uploading markdown.
+
+Collector cannot fetch useful data:
+  collector exits successfully without uploading markdown.
+
+No markdown artifacts:
+  Codex runs without external context.
+
+One or more markdown artifacts:
+  Codex receives only those files through --context-file.
 ```
 
 Keep these exports small and sanitized:

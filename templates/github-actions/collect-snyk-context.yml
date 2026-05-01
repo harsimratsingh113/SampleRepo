@@ -1,0 +1,100 @@
+name: Collect Snyk Context
+
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: 'JSON array of runner labels, for example ["ubuntu-latest"] or ["self-hosted","macOS","X64","codex-jira-runner"].'
+        required: false
+        default: '["ubuntu-latest"]'
+        type: string
+      context_dir:
+        description: "Directory where the markdown context file should be written."
+        required: false
+        default: codex-context
+        type: string
+      artifact_name:
+        description: "Artifact name used by the master Codex workflow."
+        required: false
+        default: codex-context-snyk
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect Snyk vulnerability context
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          CONTEXT_DIR: ${{ inputs.context_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CONTEXT_DIR"
+
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            echo "SNYK_TOKEN is not configured; skipping Snyk context."
+            exit 0
+          fi
+
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "npm is not available on this runner; skipping Snyk context."
+            exit 0
+          fi
+
+          if ! command -v snyk >/dev/null 2>&1; then
+            npm install -g snyk >/tmp/snyk-install.log 2>&1 || {
+              echo "Unable to install Snyk CLI; skipping Snyk context."
+              exit 0
+            }
+          fi
+
+          snyk auth "$SNYK_TOKEN" >/dev/null 2>&1 || true
+
+          output_json="$RUNNER_TEMP/snyk-test.json"
+          output_err="$RUNNER_TEMP/snyk-test.stderr"
+          set +e
+          snyk test --all-projects --json >"$output_json" 2>"$output_err"
+          snyk_status=$?
+          set -e
+
+          if [ ! -s "$output_json" ]; then
+            echo "Snyk did not return JSON output; skipping Snyk context."
+            exit 0
+          fi
+
+          {
+            echo "# Snyk vulnerabilities"
+            echo
+            echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "Command exit code: $snyk_status"
+            echo
+            echo "A non-zero Snyk exit code can mean vulnerabilities were found."
+            echo
+            if [ -s "$output_err" ]; then
+              echo "## CLI stderr"
+              echo
+              echo '```text'
+              sed -E 's/(token|authorization|password|secret)[=:][^ ]+/\1=[REDACTED]/Ig' "$output_err"
+              echo '```'
+              echo
+            fi
+            echo "## JSON result"
+            echo
+            echo '```json'
+            cat "$output_json"
+            echo
+            echo '```'
+          } > "$CONTEXT_DIR/snyk.md"
+
+      - name: Upload Snyk context
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.context_dir }}/snyk.md
+          if-no-files-found: ignore

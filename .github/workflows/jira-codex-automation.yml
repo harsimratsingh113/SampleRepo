@@ -49,7 +49,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  collect-snyk-context:
+    if: ${{ vars.ENABLE_SNYK_CONTEXT == 'true' }}
+    uses: ./.github/workflows/collect-snyk-context.yml
+    with:
+      runs_on: ${{ vars.CONTEXT_COLLECTOR_RUNS_ON || '["ubuntu-latest"]' }}
+      context_dir: codex-context
+      artifact_name: codex-context-snyk
+    secrets: inherit
+
+  collect-newrelic-context:
+    if: ${{ vars.ENABLE_NEW_RELIC_CONTEXT == 'true' }}
+    uses: ./.github/workflows/collect-newrelic-context.yml
+    with:
+      runs_on: ${{ vars.CONTEXT_COLLECTOR_RUNS_ON || '["ubuntu-latest"]' }}
+      context_dir: codex-context
+      artifact_name: codex-context-newrelic
+    secrets: inherit
+
+  collect-confluence-context:
+    if: ${{ vars.ENABLE_CONFLUENCE_CONTEXT == 'true' }}
+    uses: ./.github/workflows/collect-confluence-context.yml
+    with:
+      runs_on: ${{ vars.CONTEXT_COLLECTOR_RUNS_ON || '["ubuntu-latest"]' }}
+      context_dir: codex-context
+      artifact_name: codex-context-confluence
+    secrets: inherit
+
   codex:
+    needs:
+      - collect-snyk-context
+      - collect-newrelic-context
+      - collect-confluence-context
+    if: ${{ always() }}
     # Use your self-hosted runner for on-prem/VPN Jira access.
     # For a GitHub-hosted trial only, change this to ubuntu-latest.
     runs-on: [self-hosted, macOS, X64, codex-jira-runner]
@@ -150,14 +182,21 @@ jobs:
           done
           exit "$missing"
 
-      - name: Prepare external context files
+      - name: Download optional external context artifacts
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: codex-context-*
+          path: ${{ env.CODEX_CONTEXT_DIR }}
+          merge-multiple: true
+
+      - name: Prepare payload-declared external context files
         run: |
           set -euo pipefail
           mkdir -p "$CODEX_CONTEXT_DIR"
           python3 scripts/prepare_external_context.py \
             --payload-file "$GITHUB_EVENT_PATH" \
-            --context-dir "$CODEX_CONTEXT_DIR" \
-            --default-files
+            --context-dir "$CODEX_CONTEXT_DIR"
 
       - name: Run Jira-triggered Codex automation
         run: |
@@ -165,13 +204,21 @@ jobs:
           if [ "${CODEX_AUTH_MODE:-chatgpt}" = "chatgpt" ]; then
             unset OPENAI_API_KEY CODEX_API_KEY
           fi
+          context_args=()
+          if [ -s "$CODEX_CONTEXT_DIR/snyk.md" ]; then
+            context_args+=(--context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md")
+          fi
+          if [ -s "$CODEX_CONTEXT_DIR/newrelic.md" ]; then
+            context_args+=(--context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md")
+          fi
+          if [ -s "$CODEX_CONTEXT_DIR/confluence.md" ]; then
+            context_args+=(--context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md")
+          fi
           mkdir -p "$(dirname "$CODEX_REPORT_FILE")"
           python3 scripts/jira_automation_codex_runner.py \
             --payload-file "$GITHUB_EVENT_PATH" \
             --report-file "$CODEX_REPORT_FILE" \
-            --context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md" \
-            --context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md" \
-            --context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md" \
+            "${context_args[@]}" \
             --post-rca-comment-for-rca-only
 
       - name: Upload Codex RCA report

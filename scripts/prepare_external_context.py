@@ -2,10 +2,10 @@
 """
 Prepare external context files for the Jira-triggered Codex workflow.
 
-The Jira payload can reference files such as codex-context/snyk.md before those files exist in
-the runner workspace. This script creates the parent directories and safe placeholder files so
-the Codex prompt can always reference stable paths. Source-specific workflow steps can run before
-or after this script and overwrite the placeholders with sanitized data.
+The Jira payload can reference files before those files exist in the runner workspace. This
+script creates parent directories and safe placeholder files for payload-declared context files.
+Use --default-files only when a workflow intentionally wants the standard Snyk/New Relic/
+Confluence placeholders.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def context_specs(payload: dict[str, Any], context_dir: Path, include_defaults: 
                 path = Path(item)
                 specs.append((path.name, path))
 
-    if include_defaults or not specs:
+    if include_defaults:
         for label, filename in DEFAULT_CONTEXT_FILES:
             specs.append((label, context_dir / filename))
 
