@@ -209,9 +209,10 @@ Use this structure exactly:
         post_pr_link = "yes" if args.post_pr_link_comment else "no"
     rca_only_rules = (
         "Generate an RCA report only. Do not edit files, create branches, commit, run formatters, "
-        "push branches, open PRs, or post Jira comments. Inspect Jira context, local source, tests, "
-        "and GitHub PR evidence in a read-only manner. Final response must be a markdown RCA report "
-        "using the RCA template exactly."
+        "push branches, open PRs, post Jira comments, or run validation commands. Do not run build, "
+        "test, app execution, dependency install, package restore, formatter, or code-generation "
+        "commands. Inspect Jira context, local source, tests, Git history, and GitHub PR evidence in "
+        "a read-only manner. Final response must be a markdown RCA report using the RCA template exactly."
     )
     dry_run_rules = (
         "Do not push branches, open PRs, or post Jira comments. You may make local edits and "
@@ -228,7 +229,7 @@ Use this structure exactly:
         workflow_steps = """1. Summarize the confirmed problem, assumptions, related Jira/PR evidence, and likely files.
 2. Inspect the local repository and GitHub PR evidence only as needed to support the RCA.
 3. Do not make code changes, commits, branches, pushes, PRs, Jira comments, or other write actions.
-4. Capture validation as a recommended test strategy unless a safe read-only command is clearly useful.
+4. Do not run builds, tests, application commands, dependency restores, installers, formatters, or other validation commands.
 5. Produce the final markdown RCA report using the template exactly."""
     else:
         mode_rules = dry_run_rules if mode == "dry-run" else push_rules
@@ -267,6 +268,7 @@ Hard constraints:
 - Preserve unrelated local changes. Do not revert or overwrite changes that are not required for this ticket.
 - If you cannot gather enough evidence or tests fail in a risky way, stop before push/PR and report the blocker.
 - Keep secrets out of commits, PR bodies, Jira comments, and logs.
+- In rca-only mode, do not run any build/test/run/install/restore/format command. Examples that are forbidden in rca-only mode include `dotnet build`, `dotnet run`, `dotnet test`, `npm test`, `npm install`, `mvn test`, `gradle test`, `pytest`, and equivalent commands.
 
 Context gathering:
 - Treat the Jira context snapshot above as the source of truth for the current issue.
@@ -283,7 +285,8 @@ Final response:
 - Include the nine RCA template sections exactly.
 - State whether this was rca-only, dry-run, or push-pr mode.
 - List changed files, or state `None` when no files were changed.
-- Summarize validation commands and outcomes, or recommended validation if no commands were run.
+- For rca-only mode, state that validation commands were not run by design and provide recommended validation only.
+- For dry-run or push-pr mode, summarize validation commands and outcomes, or recommended validation if no commands were run.
 - Include PR URL if one was opened or updated.
 - Include any Jira comment/PR comment actions taken.
 """
@@ -375,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-git-repo-check",
         "--full-auto",
         "--sandbox",
-        "workspace-write",
+        "read-only" if mode == "rca-only" else "workspace-write",
     ]
     if args.report_file:
         report_file = Path(args.report_file).expanduser().resolve()

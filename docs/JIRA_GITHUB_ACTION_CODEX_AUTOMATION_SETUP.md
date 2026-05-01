@@ -147,8 +147,8 @@ Second value: .*codex-(rca|rca-only|dry-run|open-pr|push-pr|pr).*
 Mode labels:
 
 ```text
-codex-rca       -> RCA report artifact plus Jira RCA comment; no edits, no branch, no PR
-codex-rca-only  -> RCA report artifact only; no Jira comment, no edits, no branch, no PR
+codex-rca       -> RCA report artifact plus Jira RCA comment; no edits, no builds/tests, no branch, no PR
+codex-rca-only  -> RCA report artifact only; no Jira comment, no edits, no builds/tests, no branch, no PR
 codex-dry-run   -> RCA plus implementation dry-run; no push/PR
 codex-open-pr   -> RCA plus implementation and PR
 ```
@@ -317,6 +317,9 @@ GitHub Actions runner job as an artifact.
 
 For the `codex-rca` label, the workflow also posts the RCA report text as a Jira comment. For
 the `codex-rca-only` label, it does not post a Jira comment and only uploads the runner artifact.
+Both labels run Codex in RCA-only mode with a read-only sandbox and explicitly skip build, test,
+run, install, restore, and formatter commands. The report includes recommended validation instead
+of executed validation results.
 
 For Jira Cloud, keep:
 

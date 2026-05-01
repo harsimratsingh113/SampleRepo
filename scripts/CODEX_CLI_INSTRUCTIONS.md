@@ -131,8 +131,10 @@ Example payload:
 Mode defaults to `dry-run`. `codex-rca` switches the automation entrypoint to `rca-only`
 and posts the generated RCA report as a Jira comment. `codex-rca-only` and
 `codex-rca-report` switch it to `rca-only` but keep the report as a GitHub Actions artifact
-only. Labels such as `codex-open-pr` or `codex-push-pr` switch it to `push-pr`. Explicit
-payload `mode` wins over labels, so omit `mode` from a label-driven Jira Automation body.
+only. RCA-only mode uses a read-only Codex sandbox and does not run build, test, app, install,
+restore, or formatter commands. Labels such as `codex-open-pr` or `codex-push-pr` switch it to
+`push-pr`. Explicit payload `mode` wins over labels, so omit `mode` from a label-driven Jira
+Automation body.
 
 High-level design diagram:
 
