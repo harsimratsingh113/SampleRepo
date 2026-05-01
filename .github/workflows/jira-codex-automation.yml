@@ -68,6 +68,7 @@ jobs:
       GITHUB_DEFAULT_REPO: ${{ github.repository }}
       CODEX_MODE: dry-run
       CODEX_REPORT_FILE: codex-output/codex-rca-report.md
+      CODEX_CONTEXT_DIR: codex-context
       JIRA_COMMENT_API_VERSION: ${{ vars.JIRA_COMMENT_API_VERSION || '3' }}
 
     steps:

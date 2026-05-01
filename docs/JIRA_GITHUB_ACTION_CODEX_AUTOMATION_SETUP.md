@@ -233,6 +233,107 @@ Multi-repo scanning is intended for `codex-rca`, `codex-rca-only`, and `codex-dr
 `codex-open-pr`, use a single repo so the automation does not accidentally create or coordinate
 changes across multiple repositories.
 
+## Additional Data Source Context
+
+Use `context_files` when the RCA should include evidence from tools outside Jira/GitHub, such as
+Snyk, New Relic, Confluence, incident notes, support tickets, or exported logs.
+
+The recommended pattern is:
+
+```text
+external tool API/CLI
+  -> workflow step writes sanitized markdown/json into codex-context/
+  -> Jira payload passes those files through context_files
+  -> Codex scans repos + external context in one run
+  -> one consolidated RCA report for the Jira issue
+```
+
+Example payload with external context files:
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}"
+    },
+    "labels": ["{{fieldChange.toString}}"],
+    "repos": [
+      {
+        "repo": "harsimratsingh113/SampleRepo"
+      }
+    ],
+    "context_files": [
+      {
+        "label": "Snyk vulnerabilities",
+        "path": "codex-context/snyk.md"
+      },
+      {
+        "label": "New Relic logs",
+        "path": "codex-context/newrelic.md"
+      },
+      {
+        "label": "Confluence runbook",
+        "path": "codex-context/confluence.md"
+      }
+    ],
+    "depth": "standard"
+  }
+}
+```
+
+The workflow does not hardcode vendor integrations. Add source-specific steps before
+`Run Jira-triggered Codex automation` that write files such as:
+
+```text
+codex-context/snyk.md
+codex-context/newrelic.md
+codex-context/confluence.md
+```
+
+Recommended GitHub secrets/variables:
+
+```text
+SNYK_TOKEN
+NEW_RELIC_API_KEY
+NEW_RELIC_ACCOUNT_ID
+CONFLUENCE_BASE_URL
+CONFLUENCE_EMAIL
+CONFLUENCE_API_TOKEN
+```
+
+Keep these exports small and sanitized:
+
+```text
+Include: issue-relevant vulnerabilities, service/entity names, timestamps, error summaries,
+runbook snippets, known incidents, linked pages, and relevant log samples.
+
+Exclude: tokens, cookies, raw PII, customer secrets, full production payloads, and unrelated logs.
+```
+
+You can also send small inline context directly in the payload:
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}"
+    },
+    "labels": ["codex-rca"],
+    "repo": "harsimratsingh113/SampleRepo",
+    "external_context": {
+      "newrelic-summary": "Error rate spiked on checkout-api between 10:02 and 10:17 UTC.",
+      "snyk-summary": "No critical vulnerabilities found in the touched module."
+    },
+    "depth": "standard"
+  }
+}
+```
+
+Inline context is written to `codex-context/*.md` by the runner and included in the same RCA
+report. Use files instead of inline context for anything large or sensitive.
+
 Explicit dry-run request body:
 
 Use this only when the rule should always run dry-run regardless of labels.

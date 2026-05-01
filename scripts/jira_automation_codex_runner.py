@@ -92,6 +92,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Specific repo-relative file path Codex should inspect first. Repeatable.",
     )
     parser.add_argument(
+        "--context-file",
+        action="append",
+        default=[],
+        metavar="LABEL|PATH",
+        help="Additional external context file to scan for RCA, formatted as label|/path/to/file. Repeatable.",
+    )
+    parser.add_argument(
         "--post-rca-comment",
         action="store_true",
         help="Ask Codex to post RCA back to Jira when writeback is enabled.",
@@ -227,6 +234,24 @@ def as_repo_items(value: Any) -> list[Any]:
     return []
 
 
+def as_context_items(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+        return [part.strip() for part in stripped.split(",") if part.strip()]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
 def extract_codex_labels(value: Any) -> list[str]:
     labels: list[str] = []
     for item in as_list(value):
@@ -326,6 +351,11 @@ def repo_from_value(value: Any) -> str | None:
 
 
 def extract_repo_specs(args: argparse.Namespace, payload: dict[str, Any]) -> list[dict[str, str | None]]:
+    top_level_repo_path = (
+        args.repo_path
+        or first_value(payload, (("repo_path",), ("workspace",), ("inputs", "repo_path")))
+        or None
+    )
     repo_items = as_repo_items(
         first_value(
             payload,
@@ -365,6 +395,8 @@ def extract_repo_specs(args: argparse.Namespace, payload: dict[str, Any]) -> lis
         if isinstance(item, dict):
             repo_path_value = item.get("repo_path") or item.get("path") or item.get("workspace")
             repo_path = str(repo_path_value) if repo_path_value else None
+        elif len(repo_items) == 1 and top_level_repo_path:
+            repo_path = str(top_level_repo_path)
         specs.append({"repo": repo, "repo_path": repo_path})
 
     if not specs:
@@ -376,6 +408,10 @@ def extract_repo_specs(args: argparse.Namespace, payload: dict[str, Any]) -> lis
 
 def repo_slug(repo: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "__", repo.strip()).strip("_") or "repo"
+
+
+def safe_slug(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip().lower()).strip("-") or "context"
 
 
 def github_token_for_repo_clone() -> str:
@@ -426,6 +462,85 @@ def resolve_repo_path(repo: str, explicit_path: str | None, index: int) -> Path:
     return target
 
 
+def context_file_from_value(value: Any) -> tuple[str, Path] | None:
+    if isinstance(value, dict):
+        label = (
+            value.get("label")
+            or value.get("name")
+            or value.get("source")
+            or value.get("type")
+            or "external-context"
+        )
+        path = value.get("path") or value.get("file")
+        if path:
+            return str(label), Path(str(path)).expanduser().resolve()
+        text = value.get("text") or value.get("content") or value.get("markdown")
+        if text is not None:
+            return write_inline_context_file(str(label), str(text))
+        return None
+    if isinstance(value, str):
+        if "|" in value:
+            label, path = value.split("|", 1)
+            return label.strip(), Path(path.strip()).expanduser().resolve()
+        path = Path(value.strip()).expanduser()
+        return path.name, path.resolve()
+    return None
+
+
+def write_inline_context_file(label: str, text: str) -> tuple[str, Path]:
+    workspace = Path(os.getenv("GITHUB_WORKSPACE") or ".").expanduser().resolve()
+    context_dir = Path(os.getenv("CODEX_CONTEXT_DIR") or workspace / "codex-context").resolve()
+    context_dir.mkdir(parents=True, exist_ok=True)
+    path = context_dir / f"{safe_slug(label)}.md"
+    path.write_text(text, encoding="utf-8")
+    return label, path
+
+
+def extract_context_files(args: argparse.Namespace, payload: dict[str, Any]) -> list[tuple[str, Path]]:
+    items: list[Any] = []
+    items.extend(args.context_file or [])
+    items.extend(
+        as_context_items(
+            first_value(
+                payload,
+                (
+                    ("context_files",),
+                    ("external_context_files",),
+                    ("data_source_files",),
+                    ("inputs", "context_files"),
+                    ("inputs", "external_context_files"),
+                    ("inputs", "data_source_files"),
+                ),
+            )
+        )
+    )
+
+    inline_context = first_value(
+        payload,
+        (
+            ("context_text",),
+            ("external_context",),
+            ("data_source_context",),
+            ("inputs", "context_text"),
+            ("inputs", "external_context"),
+            ("inputs", "data_source_context"),
+        ),
+    )
+    if inline_context:
+        if isinstance(inline_context, dict):
+            for label, text in inline_context.items():
+                items.append({"label": str(label), "text": str(text)})
+        else:
+            items.append({"label": "external-context", "text": str(inline_context)})
+
+    files: list[tuple[str, Path]] = []
+    for item in items:
+        context_file = context_file_from_value(item)
+        if context_file:
+            files.append(context_file)
+    return files
+
+
 def build_runner_args(
     args: argparse.Namespace,
     payload: dict[str, Any],
@@ -435,6 +550,7 @@ def build_runner_args(
     repo_path_override: Path | None = None,
     report_file_override: str | None = None,
     context_repos: list[tuple[str, Path]] | None = None,
+    context_files: list[tuple[str, Path]] | None = None,
 ) -> list[str]:
     repo_value = args.repo or first_value(
         payload,
@@ -496,6 +612,8 @@ def build_runner_args(
         runner_args.extend(["--repo", str(repo)])
     for context_repo, context_path in context_repos or []:
         runner_args.extend(["--context-repo", f"{context_repo}|{context_path}"])
+    for label, context_path in context_files or []:
+        runner_args.extend(["--context-file", f"{label}|{context_path}"])
     if mode == "push-pr":
         runner_args.append("--push-pr")
     elif mode == "rca-only":
@@ -685,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_path_override=primary_repo_path,
         report_file_override=str(report_file) if report_file else None,
         context_repos=resolved_repos[1:],
+        context_files=extract_context_files(args, payload),
     )
     print(f"Automation payload resolved Jira issue {issue_key} with mode {mode}.")
     if len(resolved_repos) > 1:

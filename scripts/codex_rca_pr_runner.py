@@ -54,6 +54,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Additional repository context to scan for RCA, formatted as owner/repo|/absolute/path. Repeatable.",
     )
     parser.add_argument(
+        "--context-file",
+        action="append",
+        default=[],
+        metavar="LABEL|PATH",
+        help="Additional external context file to scan for RCA, formatted as label|/path/to/file. Repeatable.",
+    )
+    parser.add_argument(
         "--github-org",
         default=None,
         help='Optional GitHub search qualifier for historical PR context, e.g. "org:mycompany".',
@@ -195,6 +202,27 @@ def format_context_repos(repos: list[tuple[str, Path]]) -> str:
     return "\n".join(f"- {repo}: {path}" for repo, path in repos)
 
 
+def parse_context_files(values: list[str]) -> list[tuple[str, Path]]:
+    files: list[tuple[str, Path]] = []
+    for value in values:
+        if "|" in value:
+            label, path = value.split("|", 1)
+            label = label.strip()
+            path = path.strip()
+        else:
+            path = value.strip()
+            label = Path(path).name
+        if label and path:
+            files.append((label, Path(path).expanduser().resolve()))
+    return files
+
+
+def format_context_files(files: list[tuple[str, Path]]) -> str:
+    if not files:
+        return "- None"
+    return "\n".join(f"- {label}: {path}" for label, path in files)
+
+
 def render_prompt(
     args: argparse.Namespace,
     repo: str,
@@ -209,6 +237,7 @@ def render_prompt(
     module_focus = args.module_prefix or "entire repository"
     github_org = args.github_org or "no additional org qualifier"
     context_repos = parse_context_repos(args.context_repo)
+    context_files = parse_context_files(args.context_file)
     rca_template = """RCA report template:
 Use this structure exactly:
 1. Problem
@@ -275,6 +304,8 @@ Target:
 - Primary local repo path: {repo_path}
 - Additional repository context:
 {format_context_repos(context_repos)}
+- External context files:
+{format_context_files(context_files)}
 - Module focus: {module_focus}
 - Initial code paths:
 {format_code_paths(args.code_path)}
@@ -305,9 +336,12 @@ Context gathering:
 - If Jira MCP is explicitly enabled, use it only for requested Jira writebacks.
 - Use GitHub MCP to search merged and open PRs that mention {jira_key} or similar Jira keys, then inspect relevant PR bodies, comments, changed files, and compact diffs.
 - Inspect the primary repository and all additional repository context paths directly.
+- Inspect external context files directly when provided. These may include Snyk findings, New Relic logs, Confluence runbooks, incident notes, or other evidence exported by the workflow.
 - Keep evidence grouped by repository when multiple repositories are provided.
+- Keep external evidence grouped by data source and file label.
 - Prefer current source/test files over assumptions.
 - Additional repository context is for RCA evidence unless the mode explicitly instructs otherwise.
+- External context is read-only evidence. Do not expose tokens, cookies, credentials, raw PII, or other secrets in the final report.
 
 Implementation workflow:
 {workflow_steps}
@@ -414,6 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     ]
     for _, context_path in parse_context_repos(args.context_repo):
         codex_command.extend(["--add-dir", str(context_path)])
+    for _, context_file in parse_context_files(args.context_file):
+        codex_command.extend(["--add-dir", str(context_file.parent)])
     if args.report_file:
         report_file = Path(args.report_file).expanduser().resolve()
         report_file.parent.mkdir(parents=True, exist_ok=True)

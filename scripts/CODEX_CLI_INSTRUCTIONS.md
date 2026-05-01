@@ -148,6 +148,28 @@ The runner clones additional repos, passes them to the same `codex exec` run as 
 produces one report file for the Jira issue. Private additional repos require
 `MULTI_REPO_GITHUB_TOKEN` with read access.
 
+For external RCA evidence, pass `context_files` in the payload. Workflow steps can fetch and
+sanitize Snyk, New Relic, Confluence, or other tool context into markdown files before the Codex
+step:
+
+```json
+{
+  "issue": {
+    "key": "KAN-5"
+  },
+  "labels": ["codex-rca"],
+  "repo": "harsimratsingh113/SampleRepo",
+  "context_files": [
+    {"label": "Snyk vulnerabilities", "path": "codex-context/snyk.md"},
+    {"label": "New Relic logs", "path": "codex-context/newrelic.md"},
+    {"label": "Confluence runbook", "path": "codex-context/confluence.md"}
+  ]
+}
+```
+
+Small inline `external_context` is also supported, but files are preferred for anything large or
+sensitive.
+
 Mode defaults to `dry-run`. `codex-rca` switches the automation entrypoint to `rca-only`
 and posts the generated RCA report as a Jira comment. `codex-rca-only` and
 `codex-rca-report` switch it to `rca-only` but keep the report as a GitHub Actions artifact
