@@ -276,6 +276,9 @@ def extract_labels(payload: dict[str, Any]) -> list[str]:
 def mode_from_payload(payload: dict[str, Any], explicit_mode: str | None) -> str:
     if explicit_mode:
         return explicit_mode
+    for label in extract_labels(payload):
+        if label in MODE_BY_LABEL:
+            return MODE_BY_LABEL[label]
     value = first_value(
         payload,
         (
@@ -287,9 +290,6 @@ def mode_from_payload(payload: dict[str, Any], explicit_mode: str | None) -> str
     )
     if isinstance(value, str) and value.strip() in {"rca-only", "dry-run", "push-pr"}:
         return value.strip()
-    for label in extract_labels(payload):
-        if label in MODE_BY_LABEL:
-            return MODE_BY_LABEL[label]
     env_mode = os.getenv("CODEX_MODE", "dry-run").strip()
     return env_mode if env_mode in {"rca-only", "dry-run", "push-pr"} else "dry-run"
 

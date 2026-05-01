@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -221,6 +222,119 @@ def format_context_files(files: list[tuple[str, Path]]) -> str:
     if not files:
         return "- None"
     return "\n".join(f"- {label}: {path}" for label, path in files)
+
+
+def run_git(repo_path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_path,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def git_path_set(repo_path: Path, args: list[str]) -> set[str]:
+    completed = run_git(repo_path, args)
+    if completed.returncode != 0:
+        return set()
+    return {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+
+
+def changed_git_paths(repo_path: Path) -> set[str]:
+    paths: set[str] = set()
+    paths.update(git_path_set(repo_path, ["diff", "--name-only"]))
+    paths.update(git_path_set(repo_path, ["diff", "--name-only", "--cached"]))
+    paths.update(git_path_set(repo_path, ["ls-files", "--others", "--exclude-standard"]))
+    return paths
+
+
+def relative_git_path(repo_path: Path, path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.expanduser().resolve().relative_to(repo_path).as_posix()
+    except ValueError:
+        return None
+
+
+def ignored_rca_only_paths(repo_path: Path, report_file: str | None) -> set[str]:
+    ignored: set[str] = set()
+    report_rel = relative_git_path(repo_path, Path(report_file)) if report_file else None
+    if report_rel:
+        ignored.add(report_rel)
+    context_dir = os.getenv("CODEX_CONTEXT_DIR", "").strip()
+    context_rel = relative_git_path(repo_path, Path(context_dir)) if context_dir else None
+    if context_rel:
+        ignored.add(context_rel.rstrip("/") + "/")
+    return ignored
+
+
+def is_ignored_rca_only_path(path: str, ignored_paths: set[str]) -> bool:
+    for ignored in ignored_paths:
+        if ignored.endswith("/"):
+            if path.startswith(ignored):
+                return True
+        elif path == ignored:
+            return True
+    return False
+
+
+def restore_paths(repo_path: Path, paths: set[str]) -> bool:
+    ok = True
+    for path in sorted(paths):
+        tracked = run_git(repo_path, ["ls-files", "--error-unmatch", "--", path]).returncode == 0
+        if tracked:
+            restored = run_git(repo_path, ["restore", "--staged", "--worktree", "--", path])
+            if restored.returncode != 0:
+                print(f"Failed to restore tracked RCA-only change: {path}", file=sys.stderr)
+                ok = False
+            continue
+        target = repo_path / path
+        try:
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
+        except OSError as exc:
+            print(f"Failed to remove untracked RCA-only change {path}: {exc}", file=sys.stderr)
+            ok = False
+    return ok
+
+
+def enforce_rca_only_no_repo_changes(
+    repo_path: Path,
+    baseline_paths: set[str],
+    report_file: str | None,
+) -> int:
+    current_paths = changed_git_paths(repo_path)
+    ignored_paths = ignored_rca_only_paths(repo_path, report_file)
+    violations = {
+        path
+        for path in current_paths - baseline_paths
+        if not is_ignored_rca_only_path(path, ignored_paths)
+    }
+    if not violations:
+        return 0
+
+    print("RCA-only mode detected repository file changes, which are not allowed:", file=sys.stderr)
+    for path in sorted(violations):
+        print(f"- {path}", file=sys.stderr)
+
+    restore_enabled = os.getenv("CODEX_RCA_ONLY_RESTORE_CHANGES", "").strip().lower()
+    if restore_enabled in {"1", "true", "yes", "y", "on"}:
+        if restore_paths(repo_path, violations):
+            print("Restored disallowed RCA-only repository changes.")
+            return 0
+        return 6
+
+    print(
+        "Set CODEX_RCA_ONLY_RESTORE_CHANGES=true to auto-restore disallowed RCA-only changes "
+        "on CI runners.",
+        file=sys.stderr,
+    )
+    return 6
 
 
 def render_prompt(
@@ -436,16 +550,21 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             return rc
 
+    baseline_changed_paths = changed_git_paths(repo_path) if mode == "rca-only" else set()
+
     codex_command = [
         "codex",
         "exec",
         "--cd",
         str(repo_path),
         "--skip-git-repo-check",
-        "--full-auto",
         "--sandbox",
         "read-only" if mode == "rca-only" else "workspace-write",
     ]
+    if mode == "rca-only":
+        codex_command.append("--ephemeral")
+    else:
+        codex_command.append("--full-auto")
     for _, context_path in parse_context_repos(args.context_repo):
         codex_command.extend(["--add-dir", str(context_path)])
     for _, context_file in parse_context_files(args.context_file):
@@ -466,6 +585,14 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     if args.report_file:
         print(f"Codex final report file: {Path(args.report_file).expanduser().resolve()}")
+    if mode == "rca-only":
+        guard_rc = enforce_rca_only_no_repo_changes(
+            repo_path,
+            baseline_changed_paths,
+            args.report_file,
+        )
+        if guard_rc != 0:
+            return guard_rc
     return int(completed.returncode)
 
 

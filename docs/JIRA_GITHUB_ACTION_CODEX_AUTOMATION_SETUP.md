@@ -154,6 +154,10 @@ codex-dry-run   -> RCA plus implementation dry-run; no push/PR
 codex-open-pr   -> RCA plus implementation and PR
 ```
 
+Mode resolution order is explicit CLI override, Codex label, payload `mode`, then `CODEX_MODE`.
+This means `codex-rca` still runs as RCA-only even if an older Jira body accidentally includes
+`"mode": "dry-run"`.
+
 Action: Send web request
 
 ```text

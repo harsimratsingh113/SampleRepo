@@ -220,8 +220,9 @@ and posts the generated RCA report as a Jira comment. `codex-rca-only` and
 `codex-rca-report` switch it to `rca-only` but keep the report as a GitHub Actions artifact
 only. RCA-only mode uses a read-only Codex sandbox and does not run build, test, app, install,
 restore, or formatter commands. Labels such as `codex-open-pr` or `codex-push-pr` switch it to
-`push-pr`. Explicit payload `mode` wins over labels, so omit `mode` from a label-driven Jira
-Automation body.
+`push-pr`. The workflow resolves mode in this order: explicit CLI override, Codex labels,
+payload `mode`, then `CODEX_MODE`. This lets an old Jira body with `"mode": "dry-run"` still
+be safely overridden by the `codex-rca` label.
 
 High-level design diagram:
 
