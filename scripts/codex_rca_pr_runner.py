@@ -47,6 +47,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Local repository path Codex should inspect/edit (default: current directory).",
     )
     parser.add_argument(
+        "--context-repo",
+        action="append",
+        default=[],
+        metavar="OWNER/REPO|ABS_PATH",
+        help="Additional repository context to scan for RCA, formatted as owner/repo|/absolute/path. Repeatable.",
+    )
+    parser.add_argument(
         "--github-org",
         default=None,
         help='Optional GitHub search qualifier for historical PR context, e.g. "org:mycompany".',
@@ -169,6 +176,25 @@ def format_code_paths(paths: list[str]) -> str:
     return "\n".join(f"- {path}" for path in paths)
 
 
+def parse_context_repos(values: list[str]) -> list[tuple[str, Path]]:
+    repos: list[tuple[str, Path]] = []
+    for value in values:
+        if "|" not in value:
+            continue
+        repo, path = value.split("|", 1)
+        repo = repo.strip()
+        path = path.strip()
+        if repo and path:
+            repos.append((repo, Path(path).expanduser().resolve()))
+    return repos
+
+
+def format_context_repos(repos: list[tuple[str, Path]]) -> str:
+    if not repos:
+        return "- None"
+    return "\n".join(f"- {repo}: {path}" for repo, path in repos)
+
+
 def render_prompt(
     args: argparse.Namespace,
     repo: str,
@@ -182,6 +208,7 @@ def render_prompt(
     branch_source = args.base_branch or "the detected repository default branch"
     module_focus = args.module_prefix or "entire repository"
     github_org = args.github_org or "no additional org qualifier"
+    context_repos = parse_context_repos(args.context_repo)
     rca_template = """RCA report template:
 Use this structure exactly:
 1. Problem
@@ -244,8 +271,10 @@ Use this structure exactly:
 
 Target:
 - Jira issue: {jira_key}
-- GitHub repo: {repo}
-- Local repo path: {repo_path}
+- Primary GitHub repo: {repo}
+- Primary local repo path: {repo_path}
+- Additional repository context:
+{format_context_repos(context_repos)}
 - Module focus: {module_focus}
 - Initial code paths:
 {format_code_paths(args.code_path)}
@@ -275,7 +304,10 @@ Context gathering:
 - Do not call Jira MCP for Jira reads. The wrapper already fetched Jira context before launching Codex.
 - If Jira MCP is explicitly enabled, use it only for requested Jira writebacks.
 - Use GitHub MCP to search merged and open PRs that mention {jira_key} or similar Jira keys, then inspect relevant PR bodies, comments, changed files, and compact diffs.
-- Inspect the local repository directly and prefer current source/test files over assumptions.
+- Inspect the primary repository and all additional repository context paths directly.
+- Keep evidence grouped by repository when multiple repositories are provided.
+- Prefer current source/test files over assumptions.
+- Additional repository context is for RCA evidence unless the mode explicitly instructs otherwise.
 
 Implementation workflow:
 {workflow_steps}
@@ -380,6 +412,8 @@ def main(argv: list[str] | None = None) -> int:
         "--sandbox",
         "read-only" if mode == "rca-only" else "workspace-write",
     ]
+    for _, context_path in parse_context_repos(args.context_repo):
+        codex_command.extend(["--add-dir", str(context_path)])
     if args.report_file:
         report_file = Path(args.report_file).expanduser().resolve()
         report_file.parent.mkdir(parents=True, exist_ok=True)

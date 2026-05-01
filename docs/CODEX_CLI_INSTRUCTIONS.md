@@ -144,6 +144,26 @@ Example payload:
 }
 ```
 
+For one Jira issue that needs one consolidated RCA across multiple repositories, send `repos`
+instead of `repo`:
+
+```json
+{
+  "issue": {
+    "key": "KAN-5"
+  },
+  "labels": ["codex-rca"],
+  "repos": [
+    {"repo": "harsimratsingh113/SampleRepo"},
+    {"repo": "harsimratsingh113/another-service"}
+  ]
+}
+```
+
+The runner clones additional repos, passes them to the same `codex exec` run as context, and
+produces one report file for the Jira issue. Private additional repos require
+`MULTI_REPO_GITHUB_TOKEN` with read access.
+
 Mode defaults to `dry-run`. `codex-rca` switches the automation entrypoint to `rca-only`
 and posts the generated RCA report as a Jira comment. `codex-rca-only` and
 `codex-rca-report` switch it to `rca-only` but keep the report as a GitHub Actions artifact

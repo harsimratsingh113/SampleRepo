@@ -194,6 +194,45 @@ because some Jira Automation validations render that smart value in a GitHub-inc
 }
 ```
 
+Multi-repo RCA scan request body:
+
+Use `repos` when one Jira issue needs a single consolidated RCA report that scans multiple
+repositories. The workflow still produces one report artifact and, for `codex-rca`, one Jira
+comment. Evidence should be grouped by repository inside the same report.
+
+```json
+{
+  "event_type": "jira-codex",
+  "client_payload": {
+    "issue": {
+      "key": "{{issue.key}}"
+    },
+    "labels": ["{{fieldChange.toString}}"],
+    "repos": [
+      {
+        "repo": "harsimratsingh113/SampleRepo"
+      },
+      {
+        "repo": "harsimratsingh113/another-service"
+      }
+    ],
+    "depth": "standard"
+  }
+}
+```
+
+The first repo is treated as the primary repo. Additional repos are cloned into the runner
+workspace and passed to the same Codex run as read-only context. For private repos outside the
+current GitHub repository, add this GitHub Actions secret with read access to those repos:
+
+```text
+MULTI_REPO_GITHUB_TOKEN
+```
+
+Multi-repo scanning is intended for `codex-rca`, `codex-rca-only`, and `codex-dry-run`. For
+`codex-open-pr`, use a single repo so the automation does not accidentally create or coordinate
+changes across multiple repositories.
+
 Explicit dry-run request body:
 
 Use this only when the rule should always run dry-run regardless of labels.

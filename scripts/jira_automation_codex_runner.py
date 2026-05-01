@@ -15,12 +15,14 @@ import base64
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from codex_template_runner import normalize_github_repo
 from codex_rca_pr_runner import main as run_codex_rca_pr
 
 
@@ -207,6 +209,24 @@ def as_list(value: Any) -> list[str]:
     return []
 
 
+def as_repo_items(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+        return [part.strip() for part in stripped.split(",") if part.strip()]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
 def extract_codex_labels(value: Any) -> list[str]:
     labels: list[str] = []
     for item in as_list(value):
@@ -262,7 +282,7 @@ def should_post_rca_comment(args: argparse.Namespace, payload: dict[str, Any], m
     return False
 
 
-def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list[str]:
+def extract_issue_key(args: argparse.Namespace, payload: dict[str, Any]) -> str:
     issue_key = (
         args.issue_key
         or first_value(
@@ -288,7 +308,134 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
             "Missing Jira issue key. Provide issue.key in the payload, --issue-key, "
             "JIRA_ISSUE_KEY, ISSUE_KEY, or INPUT_ISSUE_KEY."
         )
+    return str(issue_key)
 
+
+def repo_from_value(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key in ("repo", "full_name", "github_repo", "repository"):
+            repo_value = value.get(key)
+            if isinstance(repo_value, dict):
+                repo_value = repo_value.get("full_name")
+            if repo_value:
+                return str(repo_value)
+        return None
+    if value:
+        return str(value)
+    return None
+
+
+def extract_repo_specs(args: argparse.Namespace, payload: dict[str, Any]) -> list[dict[str, str | None]]:
+    repo_items = as_repo_items(
+        first_value(
+            payload,
+            (
+                ("repos",),
+                ("repositories",),
+                ("github_repos",),
+                ("inputs", "repos"),
+                ("inputs", "repositories"),
+                ("inputs", "github_repos"),
+            ),
+        )
+    )
+    if args.repo:
+        repo_items = [args.repo]
+    if not repo_items:
+        repo_value = first_value(
+            payload,
+            (
+                ("repo",),
+                ("repository", "full_name"),
+                ("github_repo",),
+                ("repository",),
+                ("inputs", "repo"),
+                ("inputs", "repository"),
+                ("inputs", "github_repo"),
+            ),
+        )
+        repo_items = [repo_value] if repo_value else []
+
+    specs: list[dict[str, str | None]] = []
+    for item in repo_items:
+        repo = repo_from_value(item)
+        if not repo:
+            continue
+        repo_path = None
+        if isinstance(item, dict):
+            repo_path_value = item.get("repo_path") or item.get("path") or item.get("workspace")
+            repo_path = str(repo_path_value) if repo_path_value else None
+        specs.append({"repo": repo, "repo_path": repo_path})
+
+    if not specs:
+        repo = os.getenv("GITHUB_REPOSITORY") or os.getenv("GITHUB_DEFAULT_REPO")
+        if repo:
+            specs.append({"repo": repo, "repo_path": None})
+    return specs
+
+
+def repo_slug(repo: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "__", repo.strip()).strip("_") or "repo"
+
+
+def github_token_for_repo_clone() -> str:
+    return (
+        os.getenv("MULTI_REPO_GITHUB_TOKEN")
+        or os.getenv("GH_TOKEN")
+        or os.getenv("GITHUB_TOKEN")
+        or ""
+    ).strip()
+
+
+def resolve_repo_path(repo: str, explicit_path: str | None, index: int) -> Path:
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+
+    workspace = Path(os.getenv("GITHUB_WORKSPACE") or ".").expanduser().resolve()
+    try:
+        normalized_repo = normalize_github_repo(repo, os.getenv("GITHUB_DEFAULT_OWNER", "").strip())
+    except ValueError:
+        normalized_repo = repo.strip()
+    current_repo = os.getenv("GITHUB_REPOSITORY") or os.getenv("GITHUB_DEFAULT_REPO") or ""
+    try:
+        normalized_current = normalize_github_repo(
+            current_repo, os.getenv("GITHUB_DEFAULT_OWNER", "").strip()
+        )
+    except ValueError:
+        normalized_current = current_repo.strip()
+    if normalized_current and normalized_repo.lower() == normalized_current.lower():
+        return workspace
+
+    base_dir = Path(os.getenv("CODEX_MULTI_REPO_DIR") or workspace / "codex-repos").resolve()
+    run_id = os.getenv("GITHUB_RUN_ID") or str(os.getpid())
+    target = base_dir / f"{index + 1}-{repo_slug(normalized_repo)}-{run_id}"
+    if (target / ".git").is_dir():
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    clone_url = f"https://github.com/{normalized_repo}.git"
+    command = ["git"]
+    token = github_token_for_repo_clone()
+    if token:
+        command.extend(["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: bearer {token}"])
+    command.extend(["clone", "--depth", "1", clone_url, str(target)])
+    print(f"Cloning {normalized_repo} into {target}")
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    subprocess.run(command, check=True, env=env)
+    return target
+
+
+def build_runner_args(
+    args: argparse.Namespace,
+    payload: dict[str, Any],
+    *,
+    issue_key: str,
+    repo_override: str | None = None,
+    repo_path_override: Path | None = None,
+    report_file_override: str | None = None,
+    context_repos: list[tuple[str, Path]] | None = None,
+) -> list[str]:
     repo_value = args.repo or first_value(
         payload,
         (
@@ -303,8 +450,12 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     )
     if isinstance(repo_value, dict):
         repo_value = repo_value.get("full_name")
-    repo = repo_value or os.getenv("GITHUB_REPOSITORY") or os.getenv("GITHUB_DEFAULT_REPO")
+    repo = repo_override or repo_value or os.getenv("GITHUB_REPOSITORY") or os.getenv("GITHUB_DEFAULT_REPO")
     repo_path = (
+        str(repo_path_override)
+        if repo_path_override
+        else None
+    ) or (
         args.repo_path
         or first_value(payload, (("repo_path",), ("workspace",), ("inputs", "repo_path")))
         or os.getenv("GITHUB_WORKSPACE")
@@ -331,7 +482,8 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
         payload, (("branch_name",), ("inputs", "branch_name"))
     )
     report_file = (
-        args.report_file
+        report_file_override
+        or args.report_file
         or first_value(payload, (("report_file",), ("inputs", "report_file")))
         or os.getenv("CODEX_REPORT_FILE")
     )
@@ -342,6 +494,8 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     runner_args = [str(issue_key), "--repo-path", str(repo_path), "--depth", str(depth)]
     if repo:
         runner_args.extend(["--repo", str(repo)])
+    for context_repo, context_path in context_repos or []:
+        runner_args.extend(["--context-repo", f"{context_repo}|{context_path}"])
     if mode == "push-pr":
         runner_args.append("--push-pr")
     elif mode == "rca-only":
@@ -486,15 +640,57 @@ def post_jira_comment(issue_key: str, report_file: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     payload = load_payload(args)
-    runner_args = build_runner_args(args, payload)
-    issue_key = runner_args[0]
-    if "--push-pr" in runner_args:
-        mode = "push-pr"
-    elif "--rca-only" in runner_args:
-        mode = "rca-only"
-    else:
-        mode = "dry-run"
+    issue_key = extract_issue_key(args, payload)
+    mode = mode_from_payload(payload, args.mode)
+    repo_specs = extract_repo_specs(args, payload)
+    if not repo_specs:
+        raise SystemExit("Missing target repo. Provide repo, repos, or GITHUB_REPOSITORY.")
+    if mode == "push-pr" and len(repo_specs) > 1:
+        print(
+            "Multiple repositories are supported for RCA/dry-run scanning only. "
+            "Use one repo for push-pr mode.",
+            file=sys.stderr,
+        )
+        return 2
+
+    resolved_repos: list[tuple[str, Path]] = []
+    for index, spec in enumerate(repo_specs):
+        raw_repo = spec["repo"]
+        if not raw_repo:
+            continue
+        try:
+            normalized_repo = normalize_github_repo(
+                raw_repo, os.getenv("GITHUB_DEFAULT_OWNER", "").strip()
+            )
+            repo_path = resolve_repo_path(normalized_repo, spec.get("repo_path"), index)
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            print(f"Failed to prepare repository {raw_repo}: {exc}", file=sys.stderr)
+            return 7
+        resolved_repos.append((normalized_repo, repo_path))
+
+    if not resolved_repos:
+        raise SystemExit("No valid repositories were provided.")
+
+    primary_repo, primary_repo_path = resolved_repos[0]
+    report_file = (
+        args.report_file
+        or first_value(payload, (("report_file",), ("inputs", "report_file")))
+        or os.getenv("CODEX_REPORT_FILE")
+    )
+    runner_args = build_runner_args(
+        args,
+        payload,
+        issue_key=issue_key,
+        repo_override=primary_repo,
+        repo_path_override=primary_repo_path,
+        report_file_override=str(report_file) if report_file else None,
+        context_repos=resolved_repos[1:],
+    )
     print(f"Automation payload resolved Jira issue {issue_key} with mode {mode}.")
+    if len(resolved_repos) > 1:
+        print("Scanning repositories in one Codex run:")
+        for repo, path in resolved_repos:
+            print(f"- {repo}: {path}")
     rc = run_codex_rca_pr(runner_args)
     if (
         rc == 0

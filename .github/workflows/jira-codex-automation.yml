@@ -64,6 +64,7 @@ jobs:
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
+      MULTI_REPO_GITHUB_TOKEN: ${{ secrets.MULTI_REPO_GITHUB_TOKEN }}
       GITHUB_DEFAULT_REPO: ${{ github.repository }}
       CODEX_MODE: dry-run
       CODEX_REPORT_FILE: codex-output/codex-rca-report.md
