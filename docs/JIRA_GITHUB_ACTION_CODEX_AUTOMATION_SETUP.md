@@ -25,6 +25,7 @@ Copy these files into the target repo that Codex should inspect and edit:
 scripts/jira_automation_codex_runner.py
 scripts/codex_rca_pr_runner.py
 scripts/codex_template_runner.py
+scripts/prepare_external_context.py
 config/mcp_servers/jira.example.json
 config/mcp_servers/github.example.json
 ```
@@ -289,6 +290,50 @@ The workflow does not hardcode vendor integrations. Add source-specific steps be
 codex-context/snyk.md
 codex-context/newrelic.md
 codex-context/confluence.md
+```
+
+The workflow includes a `Prepare external context files` step. It creates the paths declared in
+`context_files` if they do not already exist. This means you can update the Jira label first, and
+the runner will create safe placeholders before Codex starts. If you want real Snyk/New Relic/
+Confluence evidence, add collection steps before the Codex step that overwrite those placeholders
+with sanitized content.
+
+Example source-specific collection placement:
+
+```yaml
+- name: Prepare external context files
+  run: |
+    mkdir -p "$CODEX_CONTEXT_DIR"
+    python3 scripts/prepare_external_context.py \
+      --payload-file "$GITHUB_EVENT_PATH" \
+      --context-dir "$CODEX_CONTEXT_DIR"
+
+- name: Collect Snyk context
+  if: ${{ secrets.SNYK_TOKEN != '' }}
+  run: |
+    {
+      echo "# Snyk vulnerabilities"
+      echo
+      echo "Populate this step with your approved Snyk CLI/API query."
+    } > codex-context/snyk.md
+
+- name: Collect New Relic context
+  if: ${{ secrets.NEW_RELIC_API_KEY != '' }}
+  run: |
+    {
+      echo "# New Relic logs"
+      echo
+      echo "Populate this step with your approved NRQL/log query."
+    } > codex-context/newrelic.md
+
+- name: Collect Confluence context
+  if: ${{ secrets.CONFLUENCE_API_TOKEN != '' }}
+  run: |
+    {
+      echo "# Confluence runbook"
+      echo
+      echo "Populate this step with your approved Confluence page export."
+    } > codex-context/confluence.md
 ```
 
 Recommended GitHub secrets/variables:

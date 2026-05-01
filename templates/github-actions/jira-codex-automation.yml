@@ -142,13 +142,21 @@ jobs:
               missing=1
               ;;
           esac
-          for file in scripts/jira_automation_codex_runner.py scripts/codex_rca_pr_runner.py scripts/codex_template_runner.py config/mcp_servers/jira.example.json config/mcp_servers/github.example.json; do
+          for file in scripts/jira_automation_codex_runner.py scripts/codex_rca_pr_runner.py scripts/codex_template_runner.py scripts/prepare_external_context.py config/mcp_servers/jira.example.json config/mcp_servers/github.example.json; do
             if [ ! -f "$file" ]; then
               echo "::error title=Missing file::$file is required in this repository"
               missing=1
             fi
           done
           exit "$missing"
+
+      - name: Prepare external context files
+        run: |
+          set -euo pipefail
+          mkdir -p "$CODEX_CONTEXT_DIR"
+          python3 scripts/prepare_external_context.py \
+            --payload-file "$GITHUB_EVENT_PATH" \
+            --context-dir "$CODEX_CONTEXT_DIR"
 
       - name: Run Jira-triggered Codex automation
         run: |

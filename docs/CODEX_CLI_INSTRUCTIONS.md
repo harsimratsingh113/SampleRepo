@@ -166,7 +166,8 @@ produces one report file for the Jira issue. Private additional repos require
 
 For external RCA evidence, pass `context_files` in the payload. Workflow steps can fetch and
 sanitize Snyk, New Relic, Confluence, or other tool context into markdown files before the Codex
-step:
+step. `scripts/prepare_external_context.py` creates the declared paths as safe placeholders when
+source-specific data has not been populated yet:
 
 ```json
 {
