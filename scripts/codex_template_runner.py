@@ -615,6 +615,28 @@ def validate_github_auth(path: Path, repo: str | None = None) -> int:
         )
         return 6
 
+    if repo:
+        try:
+            repo_spec = normalize_github_repo(repo, os.getenv("GITHUB_DEFAULT_OWNER", ""))
+            repo_data, _ = _github_request(f"https://api.github.com/repos/{repo_spec}", token)
+        except ValueError as exc:
+            print(f"GitHub repo check failed: {exc}", file=sys.stderr)
+            return 6
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            print(f"GitHub repo access check failed for {repo}.", file=sys.stderr)
+            print(f"HTTP status: {exc.code} {exc.reason}", file=sys.stderr)
+            if body:
+                print(f"Response: {body}", file=sys.stderr)
+            return 7
+        except Exception as exc:
+            print(f"GitHub repo access check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 7
+        print(f"Repo access OK: {repo_data.get('full_name') or repo_spec}")
+        print(f"Default branch: {repo_data.get('default_branch') or '(unknown)'}")
+        print("GitHub auth check OK.")
+        return 0
+
     try:
         data, response = _github_request("https://api.github.com/user", token)
     except urllib.error.HTTPError as exc:
@@ -636,26 +658,6 @@ def validate_github_auth(path: Path, repo: str | None = None) -> int:
         print(f"OAuth scopes: {response.headers.get('X-OAuth-Scopes')}")
     if response.headers.get("X-RateLimit-Remaining"):
         print(f"Rate limit remaining: {response.headers.get('X-RateLimit-Remaining')}")
-
-    if repo:
-        try:
-            repo_spec = normalize_github_repo(repo, os.getenv("GITHUB_DEFAULT_OWNER", ""))
-            repo_data, _ = _github_request(f"https://api.github.com/repos/{repo_spec}", token)
-        except ValueError as exc:
-            print(f"GitHub repo check failed: {exc}", file=sys.stderr)
-            return 6
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:300]
-            print(f"GitHub repo access check failed for {repo}.", file=sys.stderr)
-            print(f"HTTP status: {exc.code} {exc.reason}", file=sys.stderr)
-            if body:
-                print(f"Response: {body}", file=sys.stderr)
-            return 7
-        except Exception as exc:
-            print(f"GitHub repo access check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            return 7
-        print(f"Repo access OK: {repo_data.get('full_name') or repo_spec}")
-        print(f"Default branch: {repo_data.get('default_branch') or '(unknown)'}")
 
     return 0
 
