@@ -204,22 +204,23 @@ jobs:
           if [ "${CODEX_AUTH_MODE:-chatgpt}" = "chatgpt" ]; then
             unset OPENAI_API_KEY CODEX_API_KEY
           fi
-          context_args=()
+          runner_args=(
+            --payload-file "$GITHUB_EVENT_PATH"
+            --report-file "$CODEX_REPORT_FILE"
+          )
           if [ -s "$CODEX_CONTEXT_DIR/snyk.md" ]; then
-            context_args+=(--context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md")
+            runner_args+=(--context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md")
           fi
           if [ -s "$CODEX_CONTEXT_DIR/newrelic.md" ]; then
-            context_args+=(--context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md")
+            runner_args+=(--context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md")
           fi
           if [ -s "$CODEX_CONTEXT_DIR/confluence.md" ]; then
-            context_args+=(--context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md")
+            runner_args+=(--context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md")
           fi
+          runner_args+=(--post-rca-comment-for-rca-only)
+
           mkdir -p "$(dirname "$CODEX_REPORT_FILE")"
-          python3 scripts/jira_automation_codex_runner.py \
-            --payload-file "$GITHUB_EVENT_PATH" \
-            --report-file "$CODEX_REPORT_FILE" \
-            "${context_args[@]}" \
-            --post-rca-comment-for-rca-only
+          python3 scripts/jira_automation_codex_runner.py "${runner_args[@]}"
 
       - name: Upload Codex RCA report
         if: always()
