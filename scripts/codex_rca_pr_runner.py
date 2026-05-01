@@ -195,7 +195,11 @@ Use this structure exactly:
 9. Open questions"""
 
     if mode == "rca-only":
-        post_rca = "no (rca-only disables Jira writes)"
+        post_rca = (
+            "yes (the wrapper posts the final report as a Jira comment after Codex finishes)"
+            if args.post_rca_comment
+            else "no (rca-only disables Jira writes)"
+        )
         post_pr_link = "no (rca-only disables Jira writes)"
     elif mode == "dry-run":
         post_rca = "no (dry-run disables Jira writes)"

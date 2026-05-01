@@ -11,9 +11,13 @@ starting `codex exec`, so the inner Codex session does not need Jira MCP for rea
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +91,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--post-rca-comment",
         action="store_true",
         help="Ask Codex to post RCA back to Jira when writeback is enabled.",
+    )
+    parser.add_argument(
+        "--post-rca-comment-for-rca-only",
+        action="store_true",
+        help="After a successful rca-only run, post the generated report file as a Jira comment.",
     )
     parser.add_argument(
         "--post-pr-link-comment",
@@ -196,6 +205,14 @@ def as_list(value: Any) -> list[str]:
     return []
 
 
+def extract_codex_labels(value: Any) -> list[str]:
+    labels: list[str] = []
+    for item in as_list(value):
+        matches = [match.lower() for match in re.findall(r"codex-[A-Za-z0-9-]+", item)]
+        labels.extend(matches or [item.lower()])
+    return labels
+
+
 def extract_labels(payload: dict[str, Any]) -> list[str]:
     value = first_value(
         payload,
@@ -206,7 +223,7 @@ def extract_labels(payload: dict[str, Any]) -> list[str]:
             ("inputs", "labels"),
         ),
     )
-    return [label.lower() for label in as_list(value)]
+    return extract_codex_labels(value)
 
 
 def mode_from_payload(payload: dict[str, Any], explicit_mode: str | None) -> str:
@@ -327,7 +344,11 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     for code_path in code_paths:
         runner_args.extend(["--code-path", code_path])
 
-    if args.post_rca_comment or as_bool(first_value(payload, (("post_rca_comment",), ("inputs", "post_rca_comment")))):
+    if (
+        args.post_rca_comment
+        or (mode == "rca-only" and args.post_rca_comment_for_rca_only)
+        or as_bool(first_value(payload, (("post_rca_comment",), ("inputs", "post_rca_comment"))))
+    ):
         runner_args.append("--post-rca-comment")
     if args.post_pr_link_comment or as_bool(
         first_value(payload, (("post_pr_link_comment",), ("inputs", "post_pr_link_comment")))
@@ -350,6 +371,107 @@ def build_runner_args(args: argparse.Namespace, payload: dict[str, Any]) -> list
     return runner_args
 
 
+def runner_arg_value(runner_args: list[str], flag: str) -> str | None:
+    try:
+        index = runner_args.index(flag)
+    except ValueError:
+        return None
+    if index + 1 >= len(runner_args):
+        return None
+    return runner_args[index + 1]
+
+
+def markdown_to_adf(markdown: str) -> dict[str, Any]:
+    content: list[dict[str, Any]] = []
+    for line in markdown.splitlines():
+        if line.strip():
+            content.append(
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": line}],
+                }
+            )
+        else:
+            content.append({"type": "paragraph"})
+    if not content:
+        content.append(
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "Codex RCA report was empty."}],
+            }
+        )
+    return {"type": "doc", "version": 1, "content": content}
+
+
+def post_jira_comment(issue_key: str, report_file: str) -> int:
+    path = Path(report_file).expanduser().resolve()
+    if not path.is_file() or path.stat().st_size == 0:
+        print(f"Skipping Jira RCA comment because report file is missing or empty: {path}")
+        return 0
+
+    jira_base_url = os.getenv("JIRA_BASE_URL", "").rstrip("/")
+    jira_email = os.getenv("JIRA_EMAIL", "")
+    jira_api_token = os.getenv("JIRA_API_TOKEN", "")
+    if not jira_base_url or not jira_email or not jira_api_token:
+        print(
+            "Cannot post Jira RCA comment because JIRA_BASE_URL, JIRA_EMAIL, or JIRA_API_TOKEN is missing.",
+            file=sys.stderr,
+        )
+        return 8
+
+    try:
+        max_chars = int(os.getenv("JIRA_RCA_COMMENT_MAX_CHARS", "30000"))
+    except ValueError:
+        max_chars = 30000
+    report = path.read_text(encoding="utf-8", errors="replace")
+    run_url = ""
+    if os.getenv("GITHUB_SERVER_URL") and os.getenv("GITHUB_REPOSITORY") and os.getenv("GITHUB_RUN_ID"):
+        run_url = (
+            f"{os.getenv('GITHUB_SERVER_URL')}/{os.getenv('GITHUB_REPOSITORY')}"
+            f"/actions/runs/{os.getenv('GITHUB_RUN_ID')}"
+        )
+    prefix = "Codex RCA report generated from `codex-rca` automation.\n\n"
+    if run_url:
+        prefix += f"GitHub Actions artifact: {run_url}\n\n"
+    comment = prefix + report
+    if len(comment) > max_chars:
+        comment = (
+            comment[: max_chars - 160].rstrip()
+            + "\n\n[Truncated] Full RCA report is available in the GitHub Actions run artifact."
+        )
+
+    api_version = os.getenv("JIRA_COMMENT_API_VERSION", "3").strip() or "3"
+    url = f"{jira_base_url}/rest/api/{api_version}/issue/{issue_key}/comment"
+    if api_version == "2":
+        payload = {"body": comment}
+    else:
+        payload = {"body": markdown_to_adf(comment)}
+
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=body, method="POST")
+    auth = base64.b64encode(f"{jira_email}:{jira_api_token}".encode("utf-8")).decode("ascii")
+    request.add_header("Authorization", f"Basic {auth}")
+    request.add_header("Accept", "application/json")
+    request.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace")[:500]
+        print("Failed to post Jira RCA comment.", file=sys.stderr)
+        print(f"HTTP status: {exc.code} {exc.reason}", file=sys.stderr)
+        if response_body:
+            print(f"Response: {response_body}", file=sys.stderr)
+        return 8
+    except Exception as exc:
+        print(f"Failed to post Jira RCA comment: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 8
+
+    print(f"Posted Codex RCA report as Jira comment on {issue_key}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     payload = load_payload(args)
@@ -362,7 +484,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         mode = "dry-run"
     print(f"Automation payload resolved Jira issue {issue_key} with mode {mode}.")
-    return run_codex_rca_pr(runner_args)
+    rc = run_codex_rca_pr(runner_args)
+    if (
+        rc == 0
+        and mode == "rca-only"
+        and args.post_rca_comment_for_rca_only
+        and not args.print_only
+    ):
+        report_file = runner_arg_value(runner_args, "--report-file")
+        if report_file:
+            return post_jira_comment(issue_key, report_file)
+        print("Skipping Jira RCA comment because no --report-file was configured.")
+    return rc
 
 
 if __name__ == "__main__":

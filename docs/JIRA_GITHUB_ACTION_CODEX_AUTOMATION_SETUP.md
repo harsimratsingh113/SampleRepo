@@ -136,18 +136,18 @@ Add conditions:
 
 ```text
 JQL condition: project = KAN
-Issue fields condition: Labels does not contain codex-disabled
-Smart value condition: {{fieldChange.toString}} contains one of:
-- codex-rca
-- codex-rca-only
-- codex-dry-run
-- codex-open-pr
+JQL condition: labels not in (codex-disabled)
+
+Advanced compare condition:
+First value: {{fieldChange.toString}}
+Condition: matches regular expression
+Second value: .*codex-(rca|rca-only|dry-run|open-pr|push-pr|pr).*
 ```
 
 Mode labels:
 
 ```text
-codex-rca or codex-rca-only -> RCA report only; no edits, no branch, no PR
+codex-rca or codex-rca-only -> RCA report only, plus Jira RCA comment; no edits, no branch, no PR
 codex-dry-run               -> RCA plus implementation dry-run; no push/PR
 codex-open-pr               -> RCA plus implementation and PR
 ```
@@ -174,18 +174,18 @@ X-GitHub-Api-Version: 2022-11-28
 Label-driven request body:
 
 Use this when one Jira rule should support `codex-rca`, `codex-dry-run`, and
-`codex-open-pr`. Notice that `mode` is omitted so the runner can infer the mode from labels.
+`codex-open-pr`. Notice that `mode` is omitted so the runner can infer the mode from the
+label that was just added. This body intentionally avoids `{{issue.labels.asJsonStringArray}}`
+because some Jira Automation validations render that smart value in a GitHub-incompatible way.
 
 ```json
 {
   "event_type": "jira-codex",
   "client_payload": {
     "issue": {
-      "key": "{{issue.key}}",
-      "fields": {
-        "labels": {{issue.labels.asJsonStringArray}}
-      }
+      "key": "{{issue.key}}"
     },
+    "labels": ["{{fieldChange.toString}}"],
     "repo": "<owner>/<repo>",
     "repo_path": ".",
     "depth": "standard"
@@ -202,11 +202,9 @@ Use this only when the rule should always run dry-run regardless of labels.
   "event_type": "jira-codex",
   "client_payload": {
     "issue": {
-      "key": "{{issue.key}}",
-      "fields": {
-        "labels": {{issue.labels.asJsonStringArray}}
-      }
+      "key": "{{issue.key}}"
     },
+    "labels": ["codex-dry-run"],
     "repo": "<owner>/<repo>",
     "repo_path": ".",
     "mode": "dry-run",
@@ -222,11 +220,9 @@ Explicit RCA-only request body:
   "event_type": "jira-codex",
   "client_payload": {
     "issue": {
-      "key": "{{issue.key}}",
-      "fields": {
-        "labels": {{issue.labels.asJsonStringArray}}
-      }
+      "key": "{{issue.key}}"
     },
+    "labels": ["codex-rca"],
     "repo": "<owner>/<repo>",
     "repo_path": ".",
     "mode": "rca-only",
@@ -295,7 +291,8 @@ The important step is:
 ```bash
 python3 scripts/jira_automation_codex_runner.py \
   --payload-file "$GITHUB_EVENT_PATH" \
-  --report-file "$CODEX_REPORT_FILE"
+  --report-file "$CODEX_REPORT_FILE" \
+  --post-rca-comment-for-rca-only
 ```
 
 `GITHUB_EVENT_PATH` contains either `client_payload` from `repository_dispatch` or `inputs`
@@ -314,23 +311,20 @@ The report file is written to:
 codex-output/codex-rca-report.md
 ```
 
-By default, the workflow does not attach the file to Jira. To attach the report directly to the
-Jira issue, set this GitHub repository variable:
+The workflow never attaches the markdown file to Jira. The report file is attached only to the
+GitHub Actions runner job as an artifact.
+
+For `rca-only` mode, the workflow also posts the RCA report text as a Jira comment. For Jira
+Cloud, keep:
 
 ```text
-JIRA_ATTACH_CODEX_REPORT=true
+JIRA_COMMENT_API_VERSION=3
 ```
 
-For Jira Cloud, keep:
+For Jira Server/Data Center, set this GitHub repository variable:
 
 ```text
-JIRA_ATTACH_API_VERSION=3
-```
-
-For Jira Server/Data Center, set:
-
-```text
-JIRA_ATTACH_API_VERSION=2
+JIRA_COMMENT_API_VERSION=2
 ```
 
 ## Validation
