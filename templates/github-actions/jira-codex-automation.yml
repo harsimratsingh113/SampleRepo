@@ -156,7 +156,8 @@ jobs:
           mkdir -p "$CODEX_CONTEXT_DIR"
           python3 scripts/prepare_external_context.py \
             --payload-file "$GITHUB_EVENT_PATH" \
-            --context-dir "$CODEX_CONTEXT_DIR"
+            --context-dir "$CODEX_CONTEXT_DIR" \
+            --default-files
 
       - name: Run Jira-triggered Codex automation
         run: |
@@ -168,6 +169,9 @@ jobs:
           python3 scripts/jira_automation_codex_runner.py \
             --payload-file "$GITHUB_EVENT_PATH" \
             --report-file "$CODEX_REPORT_FILE" \
+            --context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md" \
+            --context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md" \
+            --context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md" \
             --post-rca-comment-for-rca-only
 
       - name: Upload Codex RCA report

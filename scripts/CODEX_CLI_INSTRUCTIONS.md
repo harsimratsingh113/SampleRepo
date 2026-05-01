@@ -148,10 +148,32 @@ The runner clones additional repos, passes them to the same `codex exec` run as 
 produces one report file for the Jira issue. Private additional repos require
 `MULTI_REPO_GITHUB_TOKEN` with read access.
 
-For external RCA evidence, pass `context_files` in the payload. Workflow steps can fetch and
-sanitize Snyk, New Relic, Confluence, or other tool context into markdown files before the Codex
-step. `scripts/prepare_external_context.py` creates the declared paths as safe placeholders when
-source-specific data has not been populated yet:
+The standard GitHub Actions workflow always prepares and passes this RCA evidence bundle to
+Codex, so Jira does not need to send `context_files`:
+
+```text
+codex-context/snyk.md
+codex-context/newrelic.md
+codex-context/confluence.md
+```
+
+If no collection step populated a file, `scripts/prepare_external_context.py` creates a safe
+placeholder. Add workflow steps before the Codex run to overwrite those files with sanitized Snyk,
+New Relic, Confluence, incident, support, or log summaries.
+
+Minimal Jira payload with standard context:
+
+```json
+{
+  "issue": {
+    "key": "KAN-5"
+  },
+  "labels": ["codex-rca"],
+  "repo": "harsimratsingh113/SampleRepo"
+}
+```
+
+Additional one-off context can still be supplied with `context_files` when needed:
 
 ```json
 {
@@ -161,9 +183,7 @@ source-specific data has not been populated yet:
   "labels": ["codex-rca"],
   "repo": "harsimratsingh113/SampleRepo",
   "context_files": [
-    {"label": "Snyk vulnerabilities", "path": "codex-context/snyk.md"},
-    {"label": "New Relic logs", "path": "codex-context/newrelic.md"},
-    {"label": "Confluence runbook", "path": "codex-context/confluence.md"}
+    {"label": "incident timeline", "path": "codex-context/incident-timeline.md"}
   ]
 }
 ```

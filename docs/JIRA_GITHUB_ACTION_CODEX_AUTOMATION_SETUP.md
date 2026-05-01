@@ -236,20 +236,20 @@ changes across multiple repositories.
 
 ## Additional Data Source Context
 
-Use `context_files` when the RCA should include evidence from tools outside Jira/GitHub, such as
-Snyk, New Relic, Confluence, incident notes, support tickets, or exported logs.
+The workflow owns the standard external evidence bundle. Jira does not need to decide whether
+Snyk, New Relic, or Confluence context should be included.
 
 The recommended pattern is:
 
 ```text
 external tool API/CLI
   -> workflow step writes sanitized markdown/json into codex-context/
-  -> Jira payload passes those files through context_files
-  -> Codex scans repos + external context in one run
+  -> workflow passes the standard files to Codex
+  -> Codex scans repos + standard external context in one run
   -> one consolidated RCA report for the Jira issue
 ```
 
-Example payload with external context files:
+The Jira Automation payload can stay minimal:
 
 ```json
 {
@@ -264,27 +264,12 @@ Example payload with external context files:
         "repo": "harsimratsingh113/SampleRepo"
       }
     ],
-    "context_files": [
-      {
-        "label": "Snyk vulnerabilities",
-        "path": "codex-context/snyk.md"
-      },
-      {
-        "label": "New Relic logs",
-        "path": "codex-context/newrelic.md"
-      },
-      {
-        "label": "Confluence runbook",
-        "path": "codex-context/confluence.md"
-      }
-    ],
     "depth": "standard"
   }
 }
 ```
 
-The workflow does not hardcode vendor integrations. Add source-specific steps before
-`Run Jira-triggered Codex automation` that write files such as:
+The workflow always prepares and passes these standard files:
 
 ```text
 codex-context/snyk.md
@@ -292,11 +277,10 @@ codex-context/newrelic.md
 codex-context/confluence.md
 ```
 
-The workflow includes a `Prepare external context files` step. It creates the paths declared in
-`context_files` if they do not already exist. This means you can update the Jira label first, and
-the runner will create safe placeholders before Codex starts. If you want real Snyk/New Relic/
-Confluence evidence, add collection steps before the Codex step that overwrite those placeholders
-with sanitized content.
+`scripts/prepare_external_context.py --default-files` creates those files as safe placeholders
+when source-specific data has not been populated yet. If you want real Snyk/New Relic/Confluence
+evidence, add collection steps before the Codex step that overwrite the placeholders with
+sanitized content.
 
 Example source-specific collection placement:
 
@@ -306,7 +290,8 @@ Example source-specific collection placement:
     mkdir -p "$CODEX_CONTEXT_DIR"
     python3 scripts/prepare_external_context.py \
       --payload-file "$GITHUB_EVENT_PATH" \
-      --context-dir "$CODEX_CONTEXT_DIR"
+      --context-dir "$CODEX_CONTEXT_DIR" \
+      --default-files
 
 - name: Collect Snyk context
   if: ${{ secrets.SNYK_TOKEN != '' }}
@@ -334,6 +319,16 @@ Example source-specific collection placement:
       echo
       echo "Populate this step with your approved Confluence page export."
     } > codex-context/confluence.md
+
+- name: Run Jira-triggered Codex automation
+  run: |
+    python3 scripts/jira_automation_codex_runner.py \
+      --payload-file "$GITHUB_EVENT_PATH" \
+      --report-file "$CODEX_REPORT_FILE" \
+      --context-file "Snyk vulnerabilities|$CODEX_CONTEXT_DIR/snyk.md" \
+      --context-file "New Relic logs|$CODEX_CONTEXT_DIR/newrelic.md" \
+      --context-file "Confluence runbook|$CODEX_CONTEXT_DIR/confluence.md" \
+      --post-rca-comment-for-rca-only
 ```
 
 Recommended GitHub secrets/variables:
@@ -356,7 +351,8 @@ runbook snippets, known incidents, linked pages, and relevant log samples.
 Exclude: tokens, cookies, raw PII, customer secrets, full production payloads, and unrelated logs.
 ```
 
-You can also send small inline context directly in the payload:
+You can still send extra one-off files or small inline context directly in the payload. Treat this
+as an exception path for evidence that is not part of the standard bundle.
 
 ```json
 {
