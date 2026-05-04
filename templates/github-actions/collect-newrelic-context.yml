@@ -31,6 +31,15 @@ jobs:
           NEW_RELIC_API_KEY: ${{ secrets.NEW_RELIC_API_KEY }}
           NEW_RELIC_ACCOUNT_ID: ${{ vars.NEW_RELIC_ACCOUNT_ID }}
           NEW_RELIC_SERVICE_NAME: ${{ vars.NEW_RELIC_SERVICE_NAME }}
+          NEW_RELIC_INFRA_HOSTNAME: ${{ vars.NEW_RELIC_INFRA_HOSTNAME }}
+          NEW_RELIC_INFRA_HOSTS: ${{ vars.NEW_RELIC_INFRA_HOSTS }}
+          NEW_RELIC_INFRA_ENTITY_NAME: ${{ vars.NEW_RELIC_INFRA_ENTITY_NAME }}
+          NEW_RELIC_INFRA_ENTITY_NAMES: ${{ vars.NEW_RELIC_INFRA_ENTITY_NAMES }}
+          NEW_RELIC_LOG_SEARCH: ${{ vars.NEW_RELIC_LOG_SEARCH }}
+          NEW_RELIC_LOG_WHERE: ${{ vars.NEW_RELIC_LOG_WHERE }}
+          NEW_RELIC_NRQL: ${{ vars.NEW_RELIC_NRQL }}
+          NEW_RELIC_SINCE: ${{ vars.NEW_RELIC_SINCE || '2 hours ago' }}
+          NEW_RELIC_LOG_LIMIT: ${{ vars.NEW_RELIC_LOG_LIMIT || '50' }}
           CONTEXT_DIR: ${{ inputs.context_dir }}
         run: |
           set -euo pipefail
@@ -43,23 +52,78 @@ jobs:
 
           request_json="$RUNNER_TEMP/newrelic-request.json"
           response_json="$RUNNER_TEMP/newrelic-response.json"
+          nrql_text="$RUNNER_TEMP/newrelic-nrql.txt"
+          export NEW_RELIC_NRQL_FILE="$nrql_text"
 
           python3 - <<'PY' > "$request_json"
           import json
           import os
+          from pathlib import Path
 
           account_id = int(os.environ["NEW_RELIC_ACCOUNT_ID"])
-          service = os.environ.get("NEW_RELIC_SERVICE_NAME", "").strip()
+          nrql_override = os.environ.get("NEW_RELIC_NRQL", "").strip()
 
-          if service:
-              where = f"entity.name = '{service.replace(chr(39), chr(39) + chr(39))}'"
+          def split_csv(value):
+              return [part.strip() for part in value.split(",") if part.strip()]
+
+          def quote(value):
+              return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+          def attr(name):
+              return f"`{name}`" if "." in name else name
+
+          def in_clause(attribute, values):
+              if not values:
+                  return ""
+              if len(values) == 1:
+                  return f"{attr(attribute)} = {quote(values[0])}"
+              return f"{attr(attribute)} IN ({', '.join(quote(value) for value in values)})"
+
+          def any_attr_clause(attributes, values):
+              parts = [in_clause(attribute, values) for attribute in attributes]
+              parts = [part for part in parts if part]
+              if not parts:
+                  return ""
+              return "(" + " OR ".join(parts) + ")"
+
+          if nrql_override:
+              nrql = nrql_override
           else:
-              where = "timestamp IS NOT NULL"
+              where_override = os.environ.get("NEW_RELIC_LOG_WHERE", "").strip()
+              since = os.environ.get("NEW_RELIC_SINCE", "2 hours ago").strip() or "2 hours ago"
+              try:
+                  limit = int(os.environ.get("NEW_RELIC_LOG_LIMIT", "50"))
+              except ValueError:
+                  limit = 50
+              limit = max(1, min(limit, 200))
 
-          nrql = (
-              "SELECT timestamp, level, message "
-              f"FROM Log WHERE {where} SINCE 2 hours ago LIMIT 50"
-          )
+              if where_override:
+                  where = where_override
+              else:
+                  clauses = []
+                  entity_names = []
+                  entity_names.extend(split_csv(os.environ.get("NEW_RELIC_SERVICE_NAME", "")))
+                  entity_names.extend(split_csv(os.environ.get("NEW_RELIC_INFRA_ENTITY_NAME", "")))
+                  entity_names.extend(split_csv(os.environ.get("NEW_RELIC_INFRA_ENTITY_NAMES", "")))
+                  hosts = []
+                  hosts.extend(split_csv(os.environ.get("NEW_RELIC_INFRA_HOSTNAME", "")))
+                  hosts.extend(split_csv(os.environ.get("NEW_RELIC_INFRA_HOSTS", "")))
+                  log_search = os.environ.get("NEW_RELIC_LOG_SEARCH", "").strip()
+
+                  entity_clause = any_attr_clause(("entity.name", "entityName"), entity_names)
+                  if entity_clause:
+                      clauses.append(entity_clause)
+                  host_clause = any_attr_clause(("hostname", "host", "host.name"), hosts)
+                  if host_clause:
+                      clauses.append(host_clause)
+                  if log_search:
+                      clauses.append(f"message LIKE {quote('%' + log_search + '%')}")
+
+                  where = " AND ".join(clauses) if clauses else "timestamp IS NOT NULL"
+
+              nrql = f"SELECT * FROM Log WHERE {where} SINCE {since} LIMIT {limit}"
+
+          Path(os.environ["NEW_RELIC_NRQL_FILE"]).write_text(nrql + "\n", encoding="utf-8")
           query = """
           query($accountId: Int!, $nrql: Nrql!) {
             actor {
@@ -93,6 +157,14 @@ jobs:
             echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
             echo "Account ID: $NEW_RELIC_ACCOUNT_ID"
             echo "Service: ${NEW_RELIC_SERVICE_NAME:-not specified}"
+            echo "Infra hosts: ${NEW_RELIC_INFRA_HOSTS:-${NEW_RELIC_INFRA_HOSTNAME:-not specified}}"
+            echo "Infra entities: ${NEW_RELIC_INFRA_ENTITY_NAMES:-${NEW_RELIC_INFRA_ENTITY_NAME:-not specified}}"
+            echo
+            echo "## NRQL"
+            echo
+            echo '```sql'
+            cat "$nrql_text"
+            echo '```'
             echo
             echo "## GraphQL response"
             echo

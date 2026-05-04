@@ -318,10 +318,46 @@ Recommended GitHub secrets/variables:
 SNYK_TOKEN
 NEW_RELIC_API_KEY
 NEW_RELIC_ACCOUNT_ID
+NEW_RELIC_INFRA_HOSTS
+NEW_RELIC_INFRA_HOSTNAME
+NEW_RELIC_INFRA_ENTITY_NAMES
+NEW_RELIC_INFRA_ENTITY_NAME
+NEW_RELIC_SERVICE_NAME
+NEW_RELIC_LOG_SEARCH
+NEW_RELIC_SINCE
+NEW_RELIC_LOG_LIMIT
+NEW_RELIC_LOG_WHERE
+NEW_RELIC_NRQL
 CONFLUENCE_BASE_URL
 CONFLUENCE_EMAIL
 CONFLUENCE_API_TOKEN
 ```
+
+For New Relic infrastructure logs, configure at least:
+
+```text
+ENABLE_NEW_RELIC_CONTEXT=true
+NEW_RELIC_API_KEY=<secret>
+NEW_RELIC_ACCOUNT_ID=<variable>
+```
+
+Then target infra logs with one or more variables:
+
+```text
+NEW_RELIC_INFRA_HOSTS=host-a,host-b
+NEW_RELIC_INFRA_ENTITY_NAMES=api-node-1,worker-node-2
+NEW_RELIC_LOG_SEARCH=timeout
+NEW_RELIC_SINCE=2 hours ago
+NEW_RELIC_LOG_LIMIT=50
+```
+
+If your team already has a known NRQL query, use this override:
+
+```text
+NEW_RELIC_NRQL=SELECT * FROM Log WHERE hostname = 'host-a' SINCE 2 hours ago LIMIT 50
+```
+
+When `NEW_RELIC_NRQL` is set, it overrides the generated host/entity/search query.
 
 Optional behavior:
 

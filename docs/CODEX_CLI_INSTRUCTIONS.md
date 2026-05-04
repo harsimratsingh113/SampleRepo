@@ -185,6 +185,12 @@ The Codex job downloads available artifacts and passes only existing non-empty f
 `--context-file`. If the flags are missing or set to `false`, no external markdown is generated
 and Codex runs exactly as before.
 
+For New Relic infrastructure logs, set `ENABLE_NEW_RELIC_CONTEXT=true`, configure
+`NEW_RELIC_API_KEY` and `NEW_RELIC_ACCOUNT_ID`, then target logs with variables such as
+`NEW_RELIC_INFRA_HOSTS`, `NEW_RELIC_INFRA_ENTITY_NAMES`, `NEW_RELIC_LOG_SEARCH`,
+`NEW_RELIC_SINCE`, and `NEW_RELIC_LOG_LIMIT`. Use `NEW_RELIC_NRQL` when you want to provide the
+exact NRQL query yourself.
+
 Minimal Jira payload remains unchanged:
 
 ```json
