@@ -1,4 +1,4 @@
-# C# Hello World
+# C# Hello All
 
 A minimal .NET 8 console application.
 
