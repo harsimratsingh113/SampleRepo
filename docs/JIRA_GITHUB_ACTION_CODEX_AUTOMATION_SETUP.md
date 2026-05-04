@@ -324,8 +324,11 @@ NEW_RELIC_INFRA_ENTITY_NAMES
 NEW_RELIC_INFRA_ENTITY_NAME
 NEW_RELIC_SERVICE_NAME
 NEW_RELIC_LOG_SEARCH
+NEW_RELIC_DATA_TYPE
 NEW_RELIC_SINCE
 NEW_RELIC_LOG_LIMIT
+NEW_RELIC_INFRA_METRIC_LIMIT
+NEW_RELIC_INCLUDE_PROCESS_SAMPLE
 NEW_RELIC_LOG_WHERE
 NEW_RELIC_NRQL
 CONFLUENCE_BASE_URL
@@ -344,11 +347,28 @@ NEW_RELIC_ACCOUNT_ID=<variable>
 Then target infra logs with one or more variables:
 
 ```text
+NEW_RELIC_DATA_TYPE=logs
 NEW_RELIC_INFRA_HOSTS=host-a,host-b
 NEW_RELIC_INFRA_ENTITY_NAMES=api-node-1,worker-node-2
 NEW_RELIC_LOG_SEARCH=timeout
 NEW_RELIC_SINCE=2 hours ago
 NEW_RELIC_LOG_LIMIT=50
+```
+
+If the host has infrastructure metrics but no logs, switch to metrics mode:
+
+```text
+NEW_RELIC_DATA_TYPE=infra-metrics
+NEW_RELIC_INFRA_HOSTS=host-a,host-b
+NEW_RELIC_SINCE=2 hours ago
+NEW_RELIC_INFRA_METRIC_LIMIT=20
+```
+
+Metrics mode queries New Relic infrastructure events `SystemSample`, `StorageSample`, and
+`NetworkSample`. To include process metrics when your account reports them, add:
+
+```text
+NEW_RELIC_INCLUDE_PROCESS_SAMPLE=true
 ```
 
 If your team already has a known NRQL query, use this override:

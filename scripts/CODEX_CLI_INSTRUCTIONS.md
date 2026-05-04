@@ -175,6 +175,10 @@ For New Relic infrastructure logs, set `ENABLE_NEW_RELIC_CONTEXT=true`, configur
 `NEW_RELIC_SINCE`, and `NEW_RELIC_LOG_LIMIT`. Use `NEW_RELIC_NRQL` when you want to provide the
 exact NRQL query yourself.
 
+If a host reports infrastructure metrics but no logs, set `NEW_RELIC_DATA_TYPE=infra-metrics`.
+The collector then queries `SystemSample`, `StorageSample`, and `NetworkSample` for the selected
+host/entity. Add `NEW_RELIC_INCLUDE_PROCESS_SAMPLE=true` only when process metrics are enabled.
+
 Minimal Jira payload remains unchanged:
 
 ```json
