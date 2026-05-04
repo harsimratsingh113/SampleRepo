@@ -316,6 +316,12 @@ Recommended GitHub secrets/variables:
 
 ```text
 SNYK_TOKEN
+SNYK_SCAN_PATH
+SNYK_SCAN_MODE
+SNYK_CODE_FALLBACK
+SNYK_ORG
+SNYK_SEVERITY_THRESHOLD
+SNYK_DETECTION_DEPTH
 NEW_RELIC_API_KEY
 NEW_RELIC_ACCOUNT_ID
 NEW_RELIC_INFRA_HOSTS
@@ -334,6 +340,53 @@ NEW_RELIC_NRQL
 CONFLUENCE_BASE_URL
 CONFLUENCE_EMAIL
 CONFLUENCE_API_TOKEN
+```
+
+For Snyk dependency scans, configure:
+
+```text
+ENABLE_SNYK_CONTEXT=true
+SNYK_TOKEN=<secret>
+```
+
+By default, the collector runs this from the repository root:
+
+```text
+snyk test --all-projects --json
+```
+
+If Snyk reports `Could not detect supported target files`, either the selected branch does not
+contain supported package/project files or they are not under the scan path. Set:
+
+```text
+SNYK_SCAN_PATH=.
+```
+
+or point it at a subfolder:
+
+```text
+SNYK_SCAN_PATH=src/service-a
+```
+
+For source-code scanning when there are no dependency manifests, set:
+
+```text
+SNYK_SCAN_MODE=code
+```
+
+To run dependency scan and Snyk Code:
+
+```text
+SNYK_SCAN_MODE=both
+```
+
+Optional controls:
+
+```text
+SNYK_ORG=<org-id-or-slug>
+SNYK_SEVERITY_THRESHOLD=high
+SNYK_DETECTION_DEPTH=4
+SNYK_CODE_FALLBACK=true
 ```
 
 For New Relic infrastructure logs, configure at least:

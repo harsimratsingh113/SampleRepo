@@ -32,6 +32,12 @@ jobs:
       - name: Collect Snyk vulnerability context
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_SCAN_PATH: ${{ vars.SNYK_SCAN_PATH || '.' }}
+          SNYK_SCAN_MODE: ${{ vars.SNYK_SCAN_MODE || 'dependency' }}
+          SNYK_CODE_FALLBACK: ${{ vars.SNYK_CODE_FALLBACK || 'true' }}
+          SNYK_ORG: ${{ vars.SNYK_ORG }}
+          SNYK_SEVERITY_THRESHOLD: ${{ vars.SNYK_SEVERITY_THRESHOLD }}
+          SNYK_DETECTION_DEPTH: ${{ vars.SNYK_DETECTION_DEPTH }}
           CONTEXT_DIR: ${{ inputs.context_dir }}
         run: |
           set -euo pipefail
@@ -56,15 +62,66 @@ jobs:
 
           snyk auth "$SNYK_TOKEN" >/dev/null 2>&1 || true
 
-          output_json="$RUNNER_TEMP/snyk-test.json"
-          output_err="$RUNNER_TEMP/snyk-test.stderr"
-          set +e
-          snyk test --all-projects --json >"$output_json" 2>"$output_err"
-          snyk_status=$?
-          set -e
+          scan_path="${SNYK_SCAN_PATH:-.}"
+          if [ ! -d "$scan_path" ]; then
+            echo "Snyk scan path does not exist: $scan_path; skipping Snyk context."
+            exit 0
+          fi
 
-          if [ ! -s "$output_json" ]; then
-            echo "Snyk did not return JSON output; skipping Snyk context."
+          dependency_json="$RUNNER_TEMP/snyk-dependency-test.json"
+          dependency_err="$RUNNER_TEMP/snyk-dependency-test.stderr"
+          code_json="$RUNNER_TEMP/snyk-code-test.json"
+          code_err="$RUNNER_TEMP/snyk-code-test.stderr"
+          dependency_status=0
+          code_status=0
+          ran_dependency=false
+          ran_code=false
+          mode="$(printf '%s' "${SNYK_SCAN_MODE:-dependency}" | tr '[:upper:]' '[:lower:]')"
+          code_fallback="$(printf '%s' "${SNYK_CODE_FALLBACK:-true}" | tr '[:upper:]' '[:lower:]')"
+
+          dependency_args=(test --all-projects --json)
+          if [ -n "${SNYK_ORG:-}" ]; then
+            dependency_args+=(--org="$SNYK_ORG")
+          fi
+          if [ -n "${SNYK_SEVERITY_THRESHOLD:-}" ]; then
+            dependency_args+=(--severity-threshold="$SNYK_SEVERITY_THRESHOLD")
+          fi
+          if [ -n "${SNYK_DETECTION_DEPTH:-}" ]; then
+            dependency_args+=(--detection-depth="$SNYK_DETECTION_DEPTH")
+          fi
+
+          if [ "$mode" = "dependency" ] || [ "$mode" = "dependencies" ] || [ "$mode" = "both" ]; then
+            ran_dependency=true
+            set +e
+            (cd "$scan_path" && snyk "${dependency_args[@]}") >"$dependency_json" 2>"$dependency_err"
+            dependency_status=$?
+            set -e
+          fi
+
+          no_supported_targets=false
+          if [ "$ran_dependency" = true ] \
+            && [ "$dependency_status" -ne 0 ] \
+            && { grep -qi "Could not detect supported target files" "$dependency_json" "$dependency_err" 2>/dev/null; }; then
+            no_supported_targets=true
+          fi
+
+          if [ "$mode" = "code" ] \
+            || [ "$mode" = "snyk-code" ] \
+            || [ "$mode" = "both" ] \
+            || { [ "$no_supported_targets" = true ] && [ "$code_fallback" != "false" ]; }; then
+            ran_code=true
+            code_args=(code test --json)
+            if [ -n "${SNYK_ORG:-}" ]; then
+              code_args+=(--org="$SNYK_ORG")
+            fi
+            set +e
+            (cd "$scan_path" && snyk "${code_args[@]}") >"$code_json" 2>"$code_err"
+            code_status=$?
+            set -e
+          fi
+
+          if [ "$ran_dependency" != true ] && [ "$ran_code" != true ]; then
+            echo "Snyk scan mode did not run dependency or code scan; skipping Snyk context."
             exit 0
           fi
 
@@ -72,24 +129,59 @@ jobs:
             echo "# Snyk vulnerabilities"
             echo
             echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            echo "Command exit code: $snyk_status"
+            echo "Scan path: $scan_path"
+            echo "Scan mode: $mode"
+            echo "Dependency scan exit code: $dependency_status"
+            echo "Code scan exit code: $code_status"
             echo
-            echo "A non-zero Snyk exit code can mean vulnerabilities were found."
-            echo
-            if [ -s "$output_err" ]; then
-              echo "## CLI stderr"
+            echo "A non-zero Snyk exit code can mean vulnerabilities were found or that Snyk could not scan the selected target."
+            if [ "$no_supported_targets" = true ]; then
               echo
-              echo '```text'
-              sed -E 's/(token|authorization|password|secret)[=:][^ ]+/\1=[REDACTED]/Ig' "$output_err"
-              echo '```'
-              echo
+              echo "Dependency scan note: Snyk did not detect supported dependency manifest files in the selected scan path."
+              echo "If this is unexpected, set SNYK_SCAN_PATH to the folder containing package manifests or project files."
             fi
-            echo "## JSON result"
-            echo
-            echo '```json'
-            cat "$output_json"
-            echo
-            echo '```'
+            if [ "$ran_dependency" = true ]; then
+              if [ -s "$dependency_err" ]; then
+                echo
+                echo "## Dependency scan stderr"
+                echo
+                echo '```text'
+                sed -E 's/(token|authorization|password|secret)[=:][^ ]+/\1=[REDACTED]/Ig' "$dependency_err"
+                echo '```'
+              fi
+              echo
+              echo "## Dependency scan JSON result"
+              echo
+              echo '```json'
+              if [ -s "$dependency_json" ]; then
+                cat "$dependency_json"
+              else
+                echo '{"ok": false, "error": "Snyk dependency scan did not return JSON output."}'
+              fi
+              echo
+              echo '```'
+            fi
+            if [ "$ran_code" = true ]; then
+              if [ -s "$code_err" ]; then
+                echo
+                echo "## Snyk Code stderr"
+                echo
+                echo '```text'
+                sed -E 's/(token|authorization|password|secret)[=:][^ ]+/\1=[REDACTED]/Ig' "$code_err"
+                echo '```'
+              fi
+              echo
+              echo "## Snyk Code JSON result"
+              echo
+              echo '```json'
+              if [ -s "$code_json" ]; then
+                cat "$code_json"
+              else
+                echo '{"ok": false, "error": "Snyk Code scan did not return JSON output."}'
+              fi
+              echo
+              echo '```'
+            fi
           } > "$CONTEXT_DIR/snyk.md"
 
       - name: Upload Snyk context

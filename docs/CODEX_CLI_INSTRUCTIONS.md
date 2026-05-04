@@ -195,6 +195,11 @@ If a host reports infrastructure metrics but no logs, set `NEW_RELIC_DATA_TYPE=i
 The collector then queries `SystemSample`, `StorageSample`, and `NetworkSample` for the selected
 host/entity. Add `NEW_RELIC_INCLUDE_PROCESS_SAMPLE=true` only when process metrics are enabled.
 
+For Snyk, the default collector runs `snyk test --all-projects --json` from the repo root. If
+Snyk cannot detect supported target files, set `SNYK_SCAN_PATH` to the folder containing manifests
+or use `SNYK_SCAN_MODE=code` for Snyk Code scanning. `SNYK_SCAN_MODE=both` runs both dependency
+and code scans.
+
 Minimal Jira payload remains unchanged:
 
 ```json
